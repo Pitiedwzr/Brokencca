@@ -1,0 +1,30 @@
+name: Brokencca
+options:
+  bundleIdPrefix: org.brokencca
+  deploymentTarget:
+    iOS: '15.0'
+settings:
+  base:
+    CLANG_ENABLE_OBJC_ARC: YES
+    CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF: YES
+    GCC_WARN_64_TO_32_BIT_CONVERSION: YES
+    MARKETING_VERSION: '0.1.0'
+    CURRENT_PROJECT_VERSION: '1'
+targets:
+  Brokencca:
+    type: application
+    platform: iOS
+    sources: [Brokencca]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.brokencca.controller
+        TARGETED_DEVICE_FAMILY: '1,2'
+        INFOPLIST_FILE: Brokencca/Info.plist
+    dependencies:
+      - sdk: UIKit.framework
+      - sdk: Network.framework
+schemes:
+  Brokencca:
+    build:
+      targets:
+        Brokencca: all
