@@ -18,6 +18,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("heartbeat timeout releases held touch", Timeout),
     ("stale sequence rejected and released", StaleSequence),
     ("sequence wraps correctly", SequenceWrap),
+    ("input diagnostics observe frames and sequence gaps", DiagnosticsObserver),
     ("wrong handshake releases state", WrongHandshake),
     ("partial frame timeout releases state", PartialTimeout),
     ("cancellation releases held touch", Cancellation)
@@ -181,6 +182,17 @@ static async Task SequenceWrap()
     await Throws<EndOfStreamException>(() => peer.Run);
     Check(peer.Sink.States[^2][0]);
 }
+static async Task DiagnosticsObserver()
+{
+    var observer = new RecordingObserver();
+    using var peer = await Peer.Create(observer: observer);
+    await peer.Hello();
+    await peer.Touch(3, true);
+    await peer.WaitForCount(2);
+    Check(observer.Messages == 1 && observer.Gaps == 2 && observer.SinkCompletions == 1);
+    peer.Client.Close();
+    await Throws<EndOfStreamException>(() => peer.Run);
+}
 static async Task WrongHandshake()
 {
     using var peer = await Peer.Create(); await peer.Send(MessageType.Reset, 0);
@@ -214,6 +226,15 @@ sealed class RecordingSink : ITouchSink
     public void Apply(TouchState state) { lock (states) states.Add(state); }
     public void Reset() => Apply(TouchState.Empty);
 }
+sealed class RecordingObserver : IInputSessionObserver
+{
+    public int Messages { get; private set; }
+    public uint Gaps { get; private set; }
+    public int SinkCompletions { get; private set; }
+    public void MessageReceived(MessageType type, uint sequence, ulong senderTimestampUs, long arrivalTimestamp) => Messages++;
+    public void SequenceGap(uint missingMessages) => Gaps += missingMessages;
+    public void SinkCompleted(MessageType type, long startedTimestamp, long completedTimestamp) => SinkCompletions++;
+}
 sealed class Peer : IDisposable
 {
     public TcpClient Client { get; } = new() { NoDelay = true };
@@ -222,7 +243,7 @@ sealed class Peer : IDisposable
     public NetworkStream Stream => Client.GetStream();
     public RecordingSink Sink { get; } = new();
     public Task Run { get; private set; } = null!;
-    public static async Task<Peer> Create(int timeoutMs = 2000)
+    public static async Task<Peer> Create(int timeoutMs = 2000, IInputSessionObserver? observer = null)
     {
         var peer = new Peer();
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -231,7 +252,7 @@ sealed class Peer : IDisposable
         {
             await peer.Client.ConnectAsync((IPEndPoint)listener.LocalEndpoint, peer.Stop.Token);
             peer.server = await listener.AcceptTcpClientAsync(peer.Stop.Token);
-            peer.Run = new InputSession(peer.Sink, TimeSpan.FromMilliseconds(timeoutMs)).RunAsync(peer.server.GetStream(), peer.Stop.Token);
+            peer.Run = new InputSession(peer.Sink, TimeSpan.FromMilliseconds(timeoutMs), observer).RunAsync(peer.server.GetStream(), peer.Stop.Token);
             var hello = await WireProtocol.ReadAsync(peer.Stream, peer.Stop.Token);
             if (hello.Type != MessageType.Hello) throw new Exception("Host did not send HELLO.");
             return peer;
