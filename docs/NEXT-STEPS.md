@@ -1,0 +1,193 @@
+# Next milestone: stable input latency, then 60 fps video
+
+## Decision and evidence
+
+Accept the current version as the first playable wired-input prototype on the
+user's tested setup. Installation, native multitouch, Apple services/iproxy,
+WACCA board communication, and gameplay have been demonstrated by the user.
+
+The next deliverable is an **input performance revision**, provisionally 0.2.
+Adding video now would add CPU/GPU/USB work before we understand the existing
+latency under load. Keep C# on Windows, Objective-C on iOS, the working serial
+mapping, and iproxy. No language rewrite or native usbmux integration is needed
+to investigate this problem. Version numbers here are planning labels, not tags.
+
+Reported symptoms:
+
+- Generally imperceptible latency during normal gameplay.
+- Increasing delay with more contacts or faster movement.
+- Delay during rapid taps.
+- Extreme ten-contact movement produces a reported overflow and 1 s reconnect.
+
+Queueing/processing backpressure is a working hypothesis, **not a diagnosis**.
+The report places overflow alongside dry-run testing, while the current dry-run
+sink has no touch FIFO. Dry-run logs every changed state synchronously; the serial
+sink and the iOS sender have separate 64-entry guards. Exact build/mode/error
+capture is therefore the first task.
+
+## Step 1 — Diagnostic build and reproducible baseline
+
+Deliver a host diagnostics mode plus small iOS timing counters. Include build
+revision, sink mode, OS/device model, iproxy version, COM configuration, and a
+machine-readable disconnect/overflow reason. Record both tested PCs separately.
+Get the iOS model and game PC GPU before selecting video settings.
+
+Measure stage-local intervals with monotonic clocks:
+
+| Stage | Measurements |
+| --- | --- |
+| iOS touch callback | Event timestamp, callback start, contacts, changed zones, callbacks/s |
+| iOS transport queue | Callback-to-enqueue/send time, pending writes, oldest pending age, send-completion delay |
+| Windows receive | Sequence, frame rate, complete-frame arrival time, receiver stalls |
+| Host sink queue | Enqueue/dequeue time, depth, oldest age, reset/overflow count |
+| Serial output | Per-port write duration, pending driver bytes where meaningful, polling/wake intervals |
+| Game-visible response | Repeated rapid-tap and slide tests; camera measurement where possible |
+
+Retain the original iOS event timestamp before dispatching work: the existing
+wire timestamp is assigned at send time and cannot measure upstream waiting.
+Report median, p95, p99, max, and queue high-water marks. Aggregate console output
+roughly once per second; detailed bounded traces are opt-in and flushed off the
+input path. A quiet dry-run mode is essential to distinguish terminal overhead
+from transport or device limits. Compare tracing on/off to measure its overhead.
+
+Do not subtract unrelated iOS and Windows clocks. Start with intervals local to
+each machine; use an explicit RTT/clock-offset exchange for cross-device timing
+if needed. Account for measurement uncertainty. A socket send completion is not
+proof that the host or game has consumed the state. New acknowledgements or
+timestamp payloads need negotiated/versioned framing: v1 currently rejects
+unexpected message types and lengths after HELLO.
+
+Expand the simulator into repeatable workloads: single taps, two-finger chords,
+ten-finger slides, release/repress of the same zone, and long bursts. Sweep input
+rates such as 120/240/480/1000 snapshots per second to find actual capacity, not
+to declare every rate a hardware requirement. Replay identical input through:
+
+1. Quiet dry-run on the development laptop.
+2. Quiet dry-run on the game PC.
+3. Serial output on the game PC.
+
+This comparison separates logging/host/USB costs from the serial/game path.
+
+## Step 2 — Remove measured host bottlenecks
+
+First implementation candidates, conditional on the baseline measurements:
+
+- Replace one-dequeue-plus-`Thread.Sleep(1)` scheduling with a signalled worker.
+  Drain ready work with bounded fairness for serial commands, resets, and shutdown.
+  Maintain serialized writes per port and game startup/keepalive behavior.
+  Sleep(1) is not a guaranteed 1 ms cadence; do not assume a fixed 15 ms cadence
+  either. Measure it on the actual machine.
+- Keep potentially blocking COM writes outside the producer queue lock. Retain
+  a single I/O owner and generation/ordering rules: a reset must invalidate
+  queued old states, and a previously dequeued state must not be replayed after
+  the reset has been applied. Cover that race with deterministic tests.
+- Eliminate synchronous per-state console printing from performance mode.
+- After profiling, reuse receive buffers and reduce per-frame allocation/timer
+  churn if GC or allocation time is material.
+- Measure whether either COM port limits service rate. The 115200 setting on
+  virtual com0com ports alone does not establish actual throughput or game polling
+  rate; do not assume changing baud rate fixes it or is protocol-compatible.
+
+Keep the proven board responses and mapping unchanged while investigating latency.
+Harden the burst-based command parser separately using captured game transactions
+if fragmentation or game-restart tests expose it as a problem.
+
+## Step 3 — Control overload without erasing inputs
+
+Do not simply increase 64 to a larger queue: that can hide overflow by increasing
+delay. Do not send input only at the 60 Hz video cadence. Input processing remains
+independent of rendering and responds immediately to changes.
+
+Prefer capacity improvements before introducing lossy scheduling. Remove only
+exact duplicate snapshots initially. A slide across a zone creates meaningful
+press/release edges, so "movement" is not automatically disposable. A latest-state
+slot can erase a full tap; OR-ing queued states can invent holds/chords. Neither
+is an acceptable default.
+
+If measured event production still exceeds sustained output capacity, explicitly
+design an edge-preserving bounded scheduler. Verify same-zone repeated taps,
+simultaneous contacts, cancellations, cross-zone slides, and final all-release.
+The current bitmap cannot distinguish touch identity or begin/move/end causality;
+add metadata only if a demonstrated scheduling policy requires it, with protocol
+versioning and interoperability tests. Evaluate any minimum pulse duration as an
+explicit game-calibration option, not an unconditional latency-adding fix.
+
+Track **queue age as well as depth**. Define an overload budget from measurements;
+do not replay seconds of stale input. Sustained overload cannot guarantee both
+unbounded lossless history and low latency. Retain fail-safe release/reconnect for
+true stalls until a tested reset/resynchronization protocol exists. Do not make
+the 1 s reconnect faster as a substitute for fixing overload during normal play.
+
+On iOS, measure transport-queue delay and main-thread rendering separately. Cache
+static ring paths/background if drawing is significant; throttle visual feedback
+independently of input. Acknowledge host consumption only if useful for measured
+flow control; never wait a round trip for every individual touch packet.
+
+## Step 4 — Acceptance gate for the input revision
+
+Use the same device, cable, PC, game, and replay for before/after comparisons.
+
+- Zero lost/reordered meaningful transitions in supported-rate replay, including
+  rapid press/release/repress and simultaneous contacts. Test reset during an
+  in-flight write, stalled consumer, overflow, partial packets, and reconnect.
+- No overflow/reconnect in a 60-second repeat of the user's ten-contact stress
+  case; no stuck touches or increasing backlog during a 30-minute play session.
+- Provisional host-only target: receive-to-serial-write-completion p95 below
+  5 ms and p99 below 10 ms on the game PC. Revise only with measured explanation
+  of a driver/game constraint; this excludes iOS sampling and game consumption.
+- Report timing for 1/2/5/10 contacts and fast slides/taps. Heavy-input delay must
+  improve against baseline; measured queue age must remain bounded.
+- Separately validate game-visible rapid taps. Successful serial writes and
+  automated edge preservation do not prove the game sampled each short pulse.
+- Repeat app suspension, rotation, cable removal/reconnect, and game restart.
+
+Deliver diagnostics, trace/replay support, targeted scheduling fixes, updated
+regression tests, and a before/after report. Changes that rely on real hardware
+need a user test build before this gate can be marked passed.
+
+## Step 5 — Resume the video plan
+
+After the input gate, proceed in independently testable stages:
+
+1. **Windows capture preview:** select Mercury HWND, implement accurate crop/DPI
+   handling, capture at 60 fps, and measure input with capture off/on.
+2. **Encoded video over USB:** hardware H.264, separate video connection, bounded
+   queues, VideoToolbox decoding, and Metal presentation on iOS. Keep touch
+   feedback local and keep the game/controller coordinate transform consistent.
+3. **Tune and calibrate:** resolution/bitrate controls, keyframe recovery, audio
+   offset assessment, and full input-plus-video stress testing. Keep the original
+   30-60 ms capture-to-display range as an unverified engineering target.
+
+At each stage, reuse the input stress baseline; reject video settings that cause
+input queues to grow. Audio streaming, replacing iproxy, and a full settings UI
+remain later work unless measurements reveal a direct dependency.
+
+## Planned change sequence
+
+1. Diagnostics, quiet dry-run, and replay harness (establish cause).
+2. Measured Windows worker/logging/lock fixes (keep protocol v1 where possible).
+3. iOS scheduling/drawing and overload-policy changes only as evidence requires.
+4. Hardware regression report and input revision acceptance.
+5. Window capture proof, then the first 60 fps video stream.
+
+The plan intentionally defers scheduling changes until the diagnostic baseline.
+
+## Implementation progress
+
+The first Step 1 instrumentation slice is now implemented. The host has
+`--diagnostics` JSON-line summaries, `--quiet` dry-run, run metadata, categorized
+disconnect reasons, receive/sink/serial queue/write timing, and high-water marks.
+The simulator now provides named repeatable workloads at configurable rates and
+durations. The iOS app records the original `UIEvent` timestamp before dispatch,
+callback/contact/change counts, transport dispatch delay, pending-write depth and
+age, and send-completion delay in once-per-second `BCCA_DIAG` logs. Protocol v1
+framing is unchanged.
+
+Still required for Step 1: capture baselines from both physical PCs and the iOS
+device, add opt-in bounded detailed traces if aggregate counters cannot localize
+the delay, and record the actual device/GPU/build/iproxy metadata. Step 2 changes
+remain conditional on those measurements.
+
+Reference: Microsoft's [Thread.Sleep documentation](https://learn.microsoft.com/en-us/dotnet/api/system.threading.thread.sleep)
+explains that the requested timeout depends on clock resolution; it is not a
+precise scheduling contract. Existing capture/codec references remain in PLAN.md.

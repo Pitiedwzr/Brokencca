@@ -3,6 +3,12 @@
 Recorded 2026-09-30. User-approved target: **60 fps**. Windows: C#/.NET;
 iOS: Objective-C. Xcode compilation is delegated to GitHub Actions on macOS.
 
+Current status: the user has validated installation, USB/multitouch, serial game
+communication, and actual gameplay. Milestone 1 is accepted as a prototype on
+the tested setup. Load-dependent latency and overload recovery are now the
+priority. See [NEXT-STEPS.md](NEXT-STEPS.md) for the immediate execution plan and
+[VALIDATION.md](VALIDATION.md) for the reported evidence.
+
 ## Goal
 
 Turn an iPhone/iPad into a wired WACCA touch controller, then display the
@@ -63,8 +69,9 @@ Implemented in this repository:
   and releases input instead of allowing growing delay.
 - Dry-run host, simulated iOS peer, regression tests, and CI definitions.
 
-Hardware acceptance remains pending. Do not call this a verified playable
-release until a real iOS device and the actual game have passed the checklist.
+The user reports successful real-device gameplay and accepts this as a prototype.
+Full checklist coverage and quantitative latency remain pending; rapid movement,
+more contacts, and rapid taps expose delay that needs improvement before video.
 
 ### Deliberate compatibility decisions
 
@@ -83,9 +90,10 @@ toucca and its WACVR reference parse serial request bursts without a formal
 packet-length parser. This prototype collects raw binary bytes until a 3 ms
 idle gap, with an additional wait for the minimum known read-command prefix.
 This improves on text decoding but is **not** a complete serial framing solution:
-coalesced requests or long inter-byte gaps can still be misinterpreted. Before
-claiming game compatibility, capture startup transactions, verify boundaries,
-and replace this adapter with a length/state parser if needed. Serial write
+coalesced requests or long inter-byte gaps can still be misinterpreted. Basic
+game compatibility is now user-validated. For broader robustness, capture startup
+transactions, verify boundaries, and replace this adapter with a length/state
+parser if needed. Serial write
 completion also does not prove the game has sampled every very short tap.
 
 ### Acceptance checklist
@@ -100,7 +108,26 @@ completion also does not prove the game has sampled every very short tap.
 6. Measure callback-to-serial-handoff median/p95/p99. Goal: p95 below 10 ms;
    not yet measured and excludes touchscreen sampling and game polling.
 
-## Milestone 2: window capture proof
+## Milestone 1.1: input latency under load (next)
+
+Deliver a diagnostic build, reproduce the reported ten-contact/rapid-tap load,
+and measure each stage before changing input semantics. Remove confirmed host
+scheduling/logging bottlenecks, keep serial writes outside the producer queue
+lock with reset-order guarantees, and bound queue age as well as capacity.
+Preserve meaningful zone transitions, short taps, releases, and simultaneous
+contacts. Do not tie input transmission to the 60 fps video target or simply
+increase the queue limit. Re-test on the user's game machine before moving on.
+
+Detailed deliverables, overload decisions, and acceptance criteria are in
+[NEXT-STEPS.md](NEXT-STEPS.md).
+
+Implementation has started with the Step 1 diagnostic build: quiet dry-run,
+aggregate host/iOS timing counters, categorized disconnect records, serial queue
+and write measurements, and rate-controlled simulator workloads are present.
+Physical baselines from both PCs and the iOS device are still required before
+the Step 2 scheduling changes are selected.
+
+## Milestone 2: window capture proof (after input stabilization)
 
 Expose/find the Mercury HWND (and allow explicit window selection). Replace
 toucca's heuristic window offsets with measured client bounds, DPI awareness,

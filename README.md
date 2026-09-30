@@ -3,11 +3,14 @@
 Wired iOS touch controller for WACCA, based on toucca's input mapping and serial
 backend and Brokenithm-iOS's usbmux connection model.
 
-**Initial input prototype.** Windows host and native iOS sources are present;
-physical iOS/game validation is still required. Window/video streaming is planned
-at **60 fps** and is not implemented yet. Use the PC display for this milestone.
+**Playable input prototype, validated by the user on real hardware.** IPA,
+multitouch, USB forwarding, and WACCA serial input work on the tested setup.
+Heavy multitouch/fast movement can cause delay or an overflow/reconnect; reducing
+that latency is the next milestone. Window/video streaming remains planned at
+**60 fps** and is not implemented yet. Use the PC display for this milestone.
 
 - [Implementation plan and remaining milestones](docs/PLAN.md)
+- [Next milestone: input latency, then video](docs/NEXT-STEPS.md)
 - [Control protocol](docs/PROTOCOL.md)
 - [Validation results and hardware checks still needed](docs/VALIDATION.md)
 
@@ -50,6 +53,21 @@ The simulator sends a short sequence of presses/releases and disconnects while
 holding zone 0. The host should print the matching zones and a final `Zones: []`.
 It then retries, ready for another simulator/device session.
 
+For a quiet, machine-readable timing baseline, run the host with diagnostics and
+select a repeatable simulator workload/rate:
+
+```powershell
+dotnet run --project src/Brokencca.Host -c Release -- --dry-run --quiet --diagnostics
+dotnet run --project tools/Brokencca.Simulator -c Release -- --workload all --rate 240 --duration 60
+```
+
+Available workloads are `taps`, `chords`, `slides`, `repress`, `burst`, and
+`all`. Sweep `--rate` through 120, 240, 480, and 1000. Diagnostics are JSON lines
+with receive intervals, sink time, serial queue age/depth, serial write time, and
+machine-readable disconnect reasons. For a hardware run, add `--device-model`
+and `--gpu` to record the missing test metadata; run once with `--quiet` and once
+without it to quantify console overhead.
+
 ## Connect an iPhone/iPad
 
 1. Build/sign/install the iOS app (below), keep it foreground, and connect USB.
@@ -89,8 +107,9 @@ dotnet run --project src/Brokencca.Host -c Release -- --serial --left COM5 --rig
 Keep iproxy running, or pass `--iproxy` to the command above. Default mode is
 dry-run; COM ports open only with `--serial`. Ctrl+C requests an all-release and
 shuts down. The game must complete board startup before packets are emitted.
-The inherited burst-based serial command parsing still needs real-game checks;
-see the plan's compatibility limit. The iOS layout preserves toucca's unusual
+The inherited burst-based serial command parsing works in the reported gameplay
+test but still needs fragmentation/restart coverage; see the plan's compatibility
+limit. The iOS layout preserves toucca's unusual
 inner/outer radius acceptance, so the blank centre is not a guaranteed dead zone.
 
 ## iOS build
@@ -112,8 +131,9 @@ run on a device. For Xcode installation, generate/open the project, select your
 development team and a suitable bundle ID, then build to the device. The unsigned
 CI build does not need signing secrets and is not an App Store release.
 
-Workflows are checked in but are not run until this repository is pushed to
-GitHub. No remote build or hardware validation is implied by their presence.
+The user has installed and tested an IPA successfully. Exact CI run/build
+provenance has not been recorded here; see the validation report for the scope
+of the confirmed hardware results.
 
 ## Layout
 
