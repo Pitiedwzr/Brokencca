@@ -8,18 +8,21 @@ namespace Brokencca.Host;
 public sealed class SerialTouchSink : ITouchSink, IDisposable
 {
     private readonly object gate = new();
-    private readonly Queue<TouchState> pending = new();
+    private readonly Queue<(TouchState State, long Enqueued)> pending = new();
     private readonly SerialPort left;
     private readonly SerialPort right;
     private readonly List<byte>[] incoming = [new(), new()];
     private readonly long[] lastByte = new long[2];
     private readonly bool[] scanning = new bool[2];
+    private readonly HostDiagnostics? diagnostics;
     private TouchState accepted = TouchState.Empty;
     private TouchState current = TouchState.Empty;
     private byte counter;
+    public HostDiagnostics? Diagnostics => diagnostics;
 
-    public SerialTouchSink(string leftPort, string rightPort)
+    public SerialTouchSink(string leftPort, string rightPort, HostDiagnostics? diagnostics = null)
     {
+        this.diagnostics = diagnostics;
         left = NewPort(leftPort);
         right = NewPort(rightPort);
         try { left.Open(); right.Open(); }
@@ -36,11 +39,14 @@ public sealed class SerialTouchSink : ITouchSink, IDisposable
             if (accepted.SameAs(state)) return;
             if (pending.Count >= 64)
             {
+                diagnostics?.QueueOverflow();
                 Reset();
                 throw new IOException("Serial input queue overflow; releasing all touches.");
             }
             accepted = state;
-            pending.Enqueue(state);
+            pending.Enqueue((state, Stopwatch.GetTimestamp()));
+            diagnostics?.QueueEnqueued(pending.Count,
+                Stopwatch.GetElapsedTime(pending.Peek().Enqueued).TotalMilliseconds);
         }
     }
 
@@ -50,7 +56,8 @@ public sealed class SerialTouchSink : ITouchSink, IDisposable
         {
             pending.Clear();
             accepted = TouchState.Empty;
-            pending.Enqueue(TouchState.Empty);
+            pending.Enqueue((TouchState.Empty, Stopwatch.GetTimestamp()));
+            diagnostics?.QueueReset();
         }
     }
 
@@ -66,7 +73,11 @@ public sealed class SerialTouchSink : ITouchSink, IDisposable
                 lock (gate)
                 {
                     bool changed = pending.TryDequeue(out var next);
-                    if (changed) current = next!;
+                    if (changed)
+                    {
+                        current = next.State;
+                        diagnostics?.QueueDequeued(Stopwatch.GetElapsedTime(next.Enqueued).TotalMilliseconds);
+                    }
                     if (changed || Stopwatch.GetElapsedTime(lastSent).TotalMilliseconds >= 100)
                     {
                         SendCurrent();
@@ -90,10 +101,12 @@ public sealed class SerialTouchSink : ITouchSink, IDisposable
 
     private void SendCurrent()
     {
+        long started = Stopwatch.GetTimestamp();
         counter = (byte)((counter + 1) & 127);
         var packets = SerialPackets.Encode(current, counter);
         if (scanning[0]) left.Write(packets.Left, 0, packets.Left.Length);
         if (scanning[1]) right.Write(packets.Right, 0, packets.Right.Length);
+        diagnostics?.SerialWrite(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
     }
 
     private void ReadCommands(SerialPort port, int side)
