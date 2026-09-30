@@ -6,7 +6,14 @@ public interface ITouchSink
     void Reset();
 }
 
-public sealed class InputSession(ITouchSink sink, TimeSpan? idleTimeout = null)
+public interface IInputSessionObserver
+{
+    void MessageReceived(MessageType type, uint sequence, ulong senderTimestampUs, long arrivalTimestamp);
+    void SequenceGap(uint missingMessages);
+    void SinkCompleted(MessageType type, long startedTimestamp, long completedTimestamp);
+}
+
+public sealed class InputSession(ITouchSink sink, TimeSpan? idleTimeout = null, IInputSessionObserver? observer = null)
 {
     private readonly TimeSpan timeout = idleTimeout ?? TimeSpan.FromMilliseconds(500);
 
@@ -28,9 +35,14 @@ public sealed class InputSession(ITouchSink sink, TimeSpan? idleTimeout = null)
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
                 deadline.CancelAfter(timeout);
                 WireMessage message = await WireProtocol.ReadAsync(stream, deadline.Token);
-                if (unchecked((int)(message.Sequence - previous)) <= 0)
+                long arrived = System.Diagnostics.Stopwatch.GetTimestamp();
+                observer?.MessageReceived(message.Type, message.Sequence, message.TimestampUs, arrived);
+                int distance = unchecked((int)(message.Sequence - previous));
+                if (distance <= 0)
                     throw new InvalidDataException("Duplicate or stale sequence number.");
+                if (distance > 1) observer?.SequenceGap((uint)(distance - 1));
                 previous = message.Sequence;
+                long sinkStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                 switch (message.Type)
                 {
                     case MessageType.Touch: sink.Apply(new(message.Payload)); break;
@@ -38,6 +50,7 @@ public sealed class InputSession(ITouchSink sink, TimeSpan? idleTimeout = null)
                     // Controller sends full snapshots every 100 ms; other messages cannot renew its lease.
                     default: throw new InvalidDataException("Expected TOUCH or RESET after handshake.");
                 }
+                observer?.SinkCompleted(message.Type, sinkStarted, System.Diagnostics.Stopwatch.GetTimestamp());
             }
         }
         finally { sink.Reset(); }
