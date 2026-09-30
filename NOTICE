@@ -1,0 +1,18 @@
+Brokencca initial implementation, 2026.
+Licensed under GPL-3.0-or-later; see LICENSE.
+
+Touch geometry, serial packet layout, and serial startup response constants
+are adapted from toucca (https://github.com/Pitiedwzr/toucca), revision adc6b7a,
+which is licensed GPL-3.0-or-later. Adaptations separate protocol and state from
+the UI, add explicit framing and lifecycle handling, and change serial writing
+to a single worker with complete immutable snapshots.
+
+toucca credits: Any2WACCAi by Raymonf; Any2WACCA_with_WACCAVCon by Mishe.W#7250;
+WACVR by xiaopeng12138; MaiTouchSensorEmulator by Leapward-Koex.
+
+Brokenithm-iOS by esterTion is the architectural reference for iOS-listener /
+Windows-usbmux-client connectivity. No Brokenithm app source or vendored
+CocoaAsyncSocket code is included in this implementation.
+
+libusbmuxd/iproxy and Apple Mobile Device Support are external dependencies,
+not redistributed here. System.IO.Ports is restored via NuGet under its own license.
