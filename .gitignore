@@ -1,0 +1,12 @@
+.tools/
+**/bin/
+**/obj/
+artifacts/
+.vs/
+.idea/
+.DS_Store
+ios/*.xcodeproj/
+ios/build/
+*.user
+*.p12
+*.mobileprovision
