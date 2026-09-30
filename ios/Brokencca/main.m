@@ -5,7 +5,8 @@
 @interface BCTouchView : UIView
 @property(nonatomic, strong) NSMutableSet<UITouch *> *activeTouches;
 @property(nonatomic, strong) NSData *bitmap;
-@property(nonatomic, copy) void (^changed)(NSData *bitmap);
+@property(nonatomic, copy) void (^changed)(NSData *bitmap, NSTimeInterval eventTimestamp,
+    NSTimeInterval callbackStarted, NSUInteger contacts, NSUInteger changedZones);
 - (void)clearTouches;
 @end
 
@@ -20,7 +21,7 @@
     }
     return self;
 }
-- (void)publish {
+- (void)publishEvent:(UIEvent *)event callbackStarted:(NSTimeInterval)callbackStarted {
     uint8_t bitmap[30] = {0};
     for (UITouch *touch in self.activeTouches) {
         CGPoint p = [touch locationInView:self];
@@ -28,17 +29,21 @@
         if (zone >= 0) bitmap[zone / 8] |= (uint8_t)(1 << (zone % 8));
     }
     NSData *state = [NSData dataWithBytes:bitmap length:30];
-    if (![state isEqualToData:self.bitmap]) {
+    NSUInteger changedZones = 0;
+    const uint8_t *old = self.bitmap.bytes;
+    for (NSUInteger i = 0; i < 30; i++) changedZones += __builtin_popcount((unsigned)(old[i] ^ bitmap[i]));
+    if (changedZones) {
         self.bitmap = state;
-        if (self.changed) self.changed(state);
         [self setNeedsDisplay];
     }
+    if (self.changed) self.changed(state, event ? event.timestamp : callbackStarted,
+        callbackStarted, self.activeTouches.count, changedZones);
 }
-- (void)clearTouches { [self.activeTouches removeAllObjects]; [self publish]; }
-- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self.activeTouches unionSet:touches]; [self publish]; }
-- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self publish]; }
-- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self.activeTouches minusSet:touches]; [self publish]; }
-- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { [self.activeTouches minusSet:touches]; [self publish]; }
+- (void)clearTouches { [self.activeTouches removeAllObjects]; NSTimeInterval now = NSProcessInfo.processInfo.systemUptime; [self publishEvent:nil callbackStarted:now]; }
+- (void)touchesBegan:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { NSTimeInterval now = NSProcessInfo.processInfo.systemUptime; [self.activeTouches unionSet:touches]; [self publishEvent:event callbackStarted:now]; }
+- (void)touchesMoved:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { NSTimeInterval now = NSProcessInfo.processInfo.systemUptime; [self publishEvent:event callbackStarted:now]; }
+- (void)touchesEnded:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { NSTimeInterval now = NSProcessInfo.processInfo.systemUptime; [self.activeTouches minusSet:touches]; [self publishEvent:event callbackStarted:now]; }
+- (void)touchesCancelled:(NSSet<UITouch *> *)touches withEvent:(UIEvent *)event { NSTimeInterval now = NSProcessInfo.processInfo.systemUptime; [self.activeTouches minusSet:touches]; [self publishEvent:event callbackStarted:now]; }
 - (void)drawRect:(CGRect)rect {
     CGContextRef c = UIGraphicsGetCurrentContext();
     CGPoint center = CGPointMake(CGRectGetMidX(self.bounds), CGRectGetMidY(self.bounds));
@@ -86,7 +91,11 @@
         [self.status.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor multiplier:0.5]
     ]];
     __weak BCViewController *weakSelf = self;
-    self.touchView.changed = ^(NSData *bitmap) { [weakSelf.transport updateTouches:bitmap]; };
+    self.touchView.changed = ^(NSData *bitmap, NSTimeInterval eventTimestamp,
+        NSTimeInterval callbackStarted, NSUInteger contacts, NSUInteger changedZones) {
+        [weakSelf.transport updateTouches:bitmap eventTimestamp:eventTimestamp
+            callbackStarted:callbackStarted contacts:contacts changedZones:changedZones];
+    };
     self.transport.statusChanged = ^(NSString *status, BOOL connected) {
         BCViewController *s = weakSelf;
         s.status.text = [status stringByAppendingString:@"\nInput prototype · use the PC display"];

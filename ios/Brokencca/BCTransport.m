@@ -1,6 +1,14 @@
 #import "BCTransport.h"
 #import "BCWire.h"
 #import <Network/Network.h>
+#import <math.h>
+
+static double BCPercentile(NSArray<NSNumber *> *values, double fraction) {
+    if (!values.count) return 0;
+    NSArray<NSNumber *> *sorted = [values sortedArrayUsingSelector:@selector(compare:)];
+    NSUInteger index = (NSUInteger)ceil(fraction * sorted.count) - 1;
+    return sorted[MIN(index, sorted.count - 1)].doubleValue;
+}
 
 @interface BCTransport ()
 @property(nonatomic, strong) dispatch_queue_t queue;
@@ -12,6 +20,17 @@
 @property(nonatomic) uint32_t sequence;
 @property(nonatomic) NSUInteger pendingWrites;
 @property(nonatomic) BOOL ready;
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *pendingWriteTimes;
+@property(nonatomic) NSUInteger callbacks;
+@property(nonatomic) NSUInteger contactTotal;
+@property(nonatomic) NSUInteger contactMax;
+@property(nonatomic) NSUInteger changedZoneTotal;
+@property(nonatomic) NSUInteger pendingHighWater;
+@property(nonatomic) NSUInteger sendCompletions;
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *eventToEnqueueSamples;
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *callbackToEnqueueSamples;
+@property(nonatomic, strong) NSMutableArray<NSNumber *> *sendCompletionSamples;
+@property(nonatomic) NSTimeInterval lastDiagnostics;
 @end
 
 @implementation BCTransport
@@ -19,6 +38,10 @@
     if ((self = [super init])) {
         _queue = dispatch_queue_create("org.brokencca.transport", DISPATCH_QUEUE_SERIAL);
         _bitmap = [NSMutableData dataWithLength:30];
+        _pendingWriteTimes = [NSMutableArray array];
+        _eventToEnqueueSamples = [NSMutableArray array];
+        _callbackToEnqueueSamples = [NSMutableArray array];
+        _sendCompletionSamples = [NSMutableArray array];
     }
     return self;
 }
@@ -62,6 +85,8 @@
     self.bitmap = [NSMutableData dataWithLength:30];
     self.sequence = 0;
     self.pendingWrites = 0;
+    [self.pendingWriteTimes removeAllObjects];
+    self.lastDiagnostics = NSProcessInfo.processInfo.systemUptime;
     self.ready = NO;
     nw_connection_set_queue(connection, self.queue);
     __weak BCTransport *weakSelf = self;
@@ -117,7 +142,10 @@
     __weak BCTransport *weakSelf = self;
     dispatch_source_set_event_handler(self.timer, ^{
         BCTransport *s = weakSelf;
-        if (s.ready) [s send:BCTouch payload:s.bitmap];
+        if (s.ready) {
+            [s send:BCTouch payload:s.bitmap];
+            [s reportDiagnosticsIfDue];
+        }
     });
     dispatch_resume(self.timer);
 }
@@ -133,22 +161,67 @@
     dispatch_data_t data = dispatch_data_create(packet.bytes, packet.length, self.queue, ^{ (void)packet; });
     nw_connection_t connection = self.connection;
     self.pendingWrites++;
+    [self.pendingWriteTimes addObject:@(NSProcessInfo.processInfo.systemUptime)];
+    self.pendingHighWater = MAX(self.pendingHighWater, self.pendingWrites);
     __weak BCTransport *weakSelf = self;
     nw_connection_send(connection, data, NW_CONNECTION_DEFAULT_MESSAGE_CONTEXT, true, ^(nw_error_t error) {
         BCTransport *s = weakSelf;
         if (!s || s.connection != connection) return;
         s.pendingWrites--;
+        if (s.pendingWriteTimes.count) {
+            double elapsed = (NSProcessInfo.processInfo.systemUptime - s.pendingWriteTimes.firstObject.doubleValue) * 1000.0;
+            [s.pendingWriteTimes removeObjectAtIndex:0];
+            s.sendCompletions++;
+            [s.sendCompletionSamples addObject:@(elapsed)];
+        }
         if (error) [s disconnect:@"Disconnected — waiting for Windows"];
     });
 }
-- (void)updateTouches:(NSData *)bitmap {
+- (void)updateTouches:(NSData *)bitmap
+       eventTimestamp:(NSTimeInterval)eventTimestamp
+      callbackStarted:(NSTimeInterval)callbackStarted
+             contacts:(NSUInteger)contacts
+         changedZones:(NSUInteger)changedZones {
     if (bitmap.length != 30) return;
     NSData *snapshot = [bitmap copy];
     dispatch_async(self.queue, ^{
+        NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+        double callbackMs = (now - callbackStarted) * 1000.0;
+        self.callbacks++;
+        self.contactTotal += contacts;
+        self.contactMax = MAX(self.contactMax, contacts);
+        self.changedZoneTotal += changedZones;
+        [self.eventToEnqueueSamples addObject:@(MAX(0, (now - eventTimestamp) * 1000.0))];
+        [self.callbackToEnqueueSamples addObject:@(callbackMs)];
         if (!self.ready || [self.bitmap isEqualToData:snapshot]) return;
         self.bitmap = snapshot;
         [self send:BCTouch payload:snapshot];
     });
+}
+- (void)reportDiagnosticsIfDue {
+    NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+    if (now - self.lastDiagnostics < 1.0) return;
+    double oldestMs = self.pendingWriteTimes.count
+        ? (now - self.pendingWriteTimes.firstObject.doubleValue) * 1000.0 : 0;
+    NSLog(@"BCCA_DIAG callbacks=%lu contacts_avg=%.2f contacts_max=%lu changed_zones=%lu event_to_enqueue_ms[p50=%.3f,p95=%.3f,p99=%.3f,max=%.3f] callback_to_enqueue_ms[p50=%.3f,p95=%.3f,p99=%.3f,max=%.3f] pending=%lu pending_high_water=%lu oldest_pending_ms=%.3f send_completion_ms[p50=%.3f,p95=%.3f,p99=%.3f,max=%.3f]",
+        (unsigned long)self.callbacks,
+        self.callbacks ? (double)self.contactTotal / self.callbacks : 0,
+        (unsigned long)self.contactMax, (unsigned long)self.changedZoneTotal,
+        BCPercentile(self.eventToEnqueueSamples, .5), BCPercentile(self.eventToEnqueueSamples, .95),
+        BCPercentile(self.eventToEnqueueSamples, .99), BCPercentile(self.eventToEnqueueSamples, 1),
+        BCPercentile(self.callbackToEnqueueSamples, .5), BCPercentile(self.callbackToEnqueueSamples, .95),
+        BCPercentile(self.callbackToEnqueueSamples, .99), BCPercentile(self.callbackToEnqueueSamples, 1),
+        (unsigned long)self.pendingWrites,
+        (unsigned long)self.pendingHighWater, oldestMs,
+        BCPercentile(self.sendCompletionSamples, .5), BCPercentile(self.sendCompletionSamples, .95),
+        BCPercentile(self.sendCompletionSamples, .99), BCPercentile(self.sendCompletionSamples, 1));
+    self.callbacks = self.contactTotal = self.contactMax = self.changedZoneTotal = 0;
+    self.pendingHighWater = self.pendingWrites;
+    self.sendCompletions = 0;
+    [self.eventToEnqueueSamples removeAllObjects];
+    [self.callbackToEnqueueSamples removeAllObjects];
+    [self.sendCompletionSamples removeAllObjects];
+    self.lastDiagnostics = now;
 }
 - (void)disconnect:(NSString *)reason {
     if (self.timer) { dispatch_source_cancel(self.timer); self.timer = nil; }
@@ -156,6 +229,7 @@
     self.connection = nil;
     self.ready = NO;
     self.received = nil;
+    [self.pendingWriteTimes removeAllObjects];
     self.bitmap = [NSMutableData dataWithLength:30];
     if (connection) {
         nw_connection_set_state_changed_handler(connection, NULL);
