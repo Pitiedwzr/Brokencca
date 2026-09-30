@@ -5,5 +5,7 @@
     <Nullable>enable</Nullable>
     <LangVersion>12</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Version>0.2.0</Version>
+    <InformationalVersion>0.2.0-diagnostics</InformationalVersion>
   </PropertyGroup>
 </Project>

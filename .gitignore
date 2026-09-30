@@ -10,3 +10,4 @@ ios/build/
 *.user
 *.p12
 *.mobileprovision
+log/
