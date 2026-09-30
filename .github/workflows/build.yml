@@ -1,0 +1,61 @@
+name: Build and test
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build and run regression suite
+        shell: pwsh
+        run: ./scripts/build.ps1
+      - name: Publish self-contained host
+        run: dotnet publish src/Brokencca.Host -c Release -r win-x64 --self-contained true -o artifacts/windows
+      - name: Smoke test published host
+        shell: pwsh
+        run: ./scripts/smoke-test.ps1
+      - name: Include documentation and license
+        shell: pwsh
+        run: |
+          Copy-Item README.md,LICENSE,NOTICE artifacts/windows
+          Copy-Item docs artifacts/windows/docs -Recurse
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Brokencca-Windows-x64
+          path: artifacts/windows
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test portable iOS mapping and framing
+        run: |
+          mkdir -p artifacts
+          clang -std=c11 -Wall -Wextra -Werror tests/ios-core-test.c -lm -o artifacts/ios-core-test
+          artifacts/ios-core-test
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          cd ios
+          xcodegen generate
+      - name: Compile unsigned iOS device app
+        run: |
+          xcodebuild -project ios/Brokencca.xcodeproj -scheme Brokencca \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath ios/build CODE_SIGNING_ALLOWED=NO build
+      - name: Package unsigned IPA (requires signing before installation)
+        run: |
+          mkdir -p artifacts/Payload
+          cp -R ios/build/Build/Products/Release-iphoneos/Brokencca.app artifacts/Payload/
+          cd artifacts
+          zip -qr Brokencca-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Brokencca-iOS-unsigned
+          path: artifacts/Brokencca-unsigned.ipa
