@@ -18,6 +18,13 @@ jobs:
         run: ./scripts/build.ps1
       - name: Publish self-contained host
         run: dotnet publish src/Brokencca.Host -c Release -r win-x64 --self-contained true -o artifacts/windows
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc
+      - name: Build and test MercuryIO DLL and portable LED mapping
+        shell: pwsh
+        run: ./scripts/build-hook.ps1 -Compiler C:/msys64/mingw64/bin/gcc.exe -OutputDirectory artifacts/windows -Test
       - name: Smoke test published host
         shell: pwsh
         run: ./scripts/smoke-test.ps1
