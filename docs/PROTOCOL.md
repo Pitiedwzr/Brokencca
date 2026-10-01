@@ -50,6 +50,11 @@ bit 0 in COM5 packet byte 1; zone 119 becomes bit 4 in COM5 packet byte 24.
 Zones 120..239 map equivalently onto COM6. Bytes 0 and 34 are the packet header
 and 7-bit rolling counter. XOR of all 36 packet bytes equals 0x80.
 
+For the optional MercuryIO backend, frontend zones map directly to callback
+cells: this fork packs cells 0..119 into emulated game COM3, and 120..239 into
+COM4. This produces the same touch data fields as the external COM5/COM6 path;
+applying WACVR's frontend-specific half swap here would incorrectly swap halves.
+
 ## Golden HELLO frame
 
 Sequence `0x11223344`, timestamp `0x0102030405060708`:
@@ -61,3 +66,32 @@ Sequence `0x11223344`, timestamp `0x0102030405060708`:
 
 The C# and iOS C header tests use this same fixture. Video framing is a later
 milestone and must negotiate a different payload limit and stream generation.
+
+## Optional LED stream v1 (independent of control)
+
+The updated iOS app also listens on loopback port **24866**. `--hook --leds`
+forwards latest complete game LED snapshots over a separate usbmux connection.
+No extra message type, capability, or payload is sent on control-v1 port 24864;
+old IPAs still work for touch. They simply lack the optional LED listener.
+
+| Offset | Bytes | Field |
+| --- | --- | --- |
+| 0 | 4 | ASCII `BCLD` |
+| 4 | 1 | LED stream version = 1 |
+| 5 | 3 | Reserved = 0 |
+| 8 | 4 | Payload length = 1924 |
+| 12 | 4 | Sequence, increasing modulo 2^32 as for control |
+| 16 | 4 | Raw Mercury `unitCount` (not interpreted as a buffer length) |
+| 20 | 1920 | 480 RGBA quadruplets in native game order |
+
+Total packet size: 1940 bytes. Host starts sending without HELLO after TCP
+connect; only host-to-iOS LED frames are supported. Fragmented/coalesced reads
+are handled. Bad magic/version/reserved fields/length, stale sequence, EOF,
+and approximately one second without a complete frame close only the LED
+connection and clear its display. The input listener/session is untouched.
+
+Output is capped at 30 fps and retains latest-frame rather than input history.
+The host's socket write has a 250 ms deadline; a stalled LED client reconnects
+independently. No LED send or receive can renew the input heartbeat lease.
+LED clocks are local; the wire has no cross-device latency timestamp. See
+[HOOK-IO.md](HOOK-IO.md) for physical mapping and game-validation limitations.

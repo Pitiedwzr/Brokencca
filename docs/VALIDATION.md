@@ -126,6 +126,39 @@ cmd /c '.\Brokencca.Host.exe --serial --left COM5 --right COM6 --iproxy .\iproxy
 Ensure `log` exists in the launch directory; this command logs instead of showing
 live console output. The real-hardware acceptance gate is still **pending**.
 
+## MercuryIO and LED revision, 2026-10-02
+
+The user supplied segatools source `8a966b2`. Brokencca now builds its own
+MercuryIO 1.0 DLL plus `--hook` host backend and an optional independent iPad
+LED stream. No segatools/WACVR/Brokenithm files were modified. The user reported
+a brief revised-serial stress test without overflow, but supplied no new log;
+the full serial gate remains pending.
+
+Local Release solution build and self-contained Windows x64 publish passed
+with zero warnings/errors. Native DLL built with MinGW-w64 GCC using
+`-Wall -Wextra -Werror`. **30/30** C# regressions passed with the native DLL,
+including all 240 C#/C touch mappings and external-serial equivalence,
+press/release/repress, in-flight reset,
+FIFO overflow/duplicates, duplicate-host rejection, dead callback detection,
+unchanged LED/alpha bytes, malformed/fragmented LED frames, and separate LED
+mutex/socket failure without input reset.
+
+The runner also launched the packaged host against a fake native game in a
+separate process: touch and LED IPC, USB-peer reconnect/release, LED socket
+failure isolation, and native watchdog release after actually terminating that
+isolated host process passed. No real game or COM ports were involved.
+Published dry-run socket smoke test passed separately.
+
+Portable iOS C tests passed for the real geometry/wire headers, LED frame
+validation, and a bijection over all 480 LED positions. **UIKit/Network.framework
+compilation has not been performed locally**; the updated macOS CI workflow
+must build the new unsigned IPA before device LED testing. Input-only hook
+testing can use the existing IPA.
+
+Real-game hook compatibility, foreground behavior, downstream edge sampling,
+LED orientation/two-subcell ordering, LED-on/off input timing, and sustained
+play remain unvalidated. Tests and configuration are in [HOOK-IO.md](HOOK-IO.md).
+
 ## Initial automated checks
 
 Local checks performed on Windows, 2026-09-30:

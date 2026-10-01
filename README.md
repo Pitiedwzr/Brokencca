@@ -14,6 +14,7 @@ awaits game-PC retesting; see the validation report. Window/video streaming rema
 - [Next milestone: input latency, then video](docs/NEXT-STEPS.md)
 - [Control protocol](docs/PROTOCOL.md)
 - [Validation results and hardware checks still needed](docs/VALIDATION.md)
+- [Optional MercuryIO backend and iPad LEDs](docs/HOOK-IO.md)
 
 ## Build and test Windows
 
@@ -123,6 +124,25 @@ test but still needs fragmentation/restart coverage; see the plan's compatibilit
 limit. The iOS layout preserves toucca's unusual
 inner/outer radius acceptance, so the blank centre is not a guaranteed dead zone.
 
+## Optional hook input and LEDs
+
+The host now supports `--hook` as an alternative to `--serial`, with a native
+`brokencca-mercuryio.dll` matching the user's segatools MercuryIO 1.0 ABI.
+The Windows publish folder `artifacts/windows-hook` includes the DLL when built
+with `./scripts/build-hook.ps1`. Set `[touch] enable=1` and
+`[mercuryio] path=brokencca-mercuryio.dll` in the game configuration, then run:
+
+```powershell
+.\Brokencca.Host.exe --hook --leds --diagnostics --iproxy .\iproxy\iproxy.exe
+```
+
+Omit `--leds` for hook touch alone, which works with the existing IPA. LED display
+needs the updated IPA and `[elizabeth] enable=1`. LEDs use a separate USB socket
+and bounded latest-frame rendering; input protocol v1 and boundary expansion
+remain unchanged. Full instructions, callback-rate caveats, and hardware tests
+are in [HOOK-IO.md](docs/HOOK-IO.md). Hook game compatibility and LED orientation
+are not yet hardware-validated; the existing serial path remains available.
+
 ## iOS build
 
 The app uses Objective-C, UIKit, and Network.framework with an iOS 15 minimum.
@@ -159,6 +179,8 @@ tests                   C# regression runner and portable iOS C tests
 ## Credits and license
 
 GPL-3.0-or-later; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
 Touch geometry and serial protocol constants/layout are adapted from
-[toucca](https://github.com/Pitiedwzr/toucca). The wired connection architecture
-is informed by [Brokenithm-iOS](https://github.com/esterTion/Brokenithm-iOS).
+[toucca](https://github.com/BlueGlassBlock/toucca). The wired connection architecture
+is informed by [Brokenithm-iOS](https://github.com/esterTion/Brokenithm-iOS). The `mercuryio` hook is informed
+ by [WACVR](https://github.com/xiaopeng12138/WACVR).

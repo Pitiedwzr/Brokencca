@@ -27,6 +27,11 @@ Inspected local revisions:
 - Brokenithm-iOS `origin/win-client` `d13b959`: .NET Framework 4.7.2;
   `iMobileDevice-net` opens the iOS port through usbmux. The host writes game
   input to shared memory and sends LED state back. Neither branch has video.
+- User's segatools `8a966b2`: MercuryIO API 1.0, 240 bool-cell callback and
+  by-value `led_data` (DWORD plus 480 RGBA entries); Elizabeth forwards LEDs.
+  Touch callbacks still feed 520-byte emulated UART buffers inside the game.
+- WACVR `c982169`: selectable serial/shared-memory touch and 480-entry LED
+  capture. Its sector-major LED ordering is used for the experimental iOS view.
 
 Windows initiates both sockets even though it hosts the game. iOS accepts
 connections. This is usbmux over USB, not USB tethering, WebUSB, or a USB HID
@@ -36,7 +41,10 @@ emulator. Unmodified Brokenithm applications are not protocol-compatible.
 
 ```text
 iOS UIKit multitouch -> 30-byte snapshots -> control socket over usbmux
-    -> Windows InputSession -> immutable state FIFO -> WACCA serial output
+    -> Windows InputSession -> immutable state FIFO
+       -> external serial output OR shared-memory MercuryIO DLL
+
+Game LED callback -> separate LED IPC -> host -> USB/LED 24866 -> iOS ring LEDs
 
 Windows game HWND -> Windows Graphics Capture -> D3D11 crop/scale/NV12
     -> hardware H.264 -> separate video socket over usbmux
@@ -128,6 +136,15 @@ worker, bounded draining, writes outside the producer lock, generation-safe
 reset, and per-port/receive-to-completion diagnostics. The 64-entry FIFO and
 input semantics are unchanged. Hardware before/after acceptance remains pending;
 see [VALIDATION.md](VALIDATION.md) for evidence and retest instructions.
+
+At the user's request, an optional MercuryIO backend and independent LED return
+path are now implemented. C# host/Objective-C input remain; the small native IO
+DLL matches only Mercury's API and does not modify segatools. The 64-entry FIFO,
+reset generations, native host-death watchdog, and separate latest-frame LED
+socket avoid copying a lossy latest-state input slot. The default 240/s callback
+cap is experimental because downstream game buffers/polling remain finite.
+Actual hook/LED hardware acceptance and iOS compilation are pending. See
+[HOOK-IO.md](HOOK-IO.md) for configuration, scope, and a serial/hook comparison.
 
 ## Milestone 2: window capture proof (after input stabilization)
 

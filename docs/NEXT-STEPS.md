@@ -209,6 +209,17 @@ least 60 seconds, press/release/repress, and 30-minute play in one logged game
 launch. Also check held-touch resets and game restart. No IPA update is needed
 for this host-only fix. Do not add lossy scheduling or video until this retest.
 
+User update 2026-10-02: a brief pressure test with the revised serial worker
+reported no overflow; no log/full-duration test yet, so acceptance stays pending.
+
+Additional user-requested option: `--hook` and `--leds` are implemented for the
+provided segatools MercuryIO 1.0 ABI. Keep serial as the playable fallback and
+test the hook separately before treating it as lower latency. Hook touch retains
+a bounded transition FIFO and reset generations; LEDs have separate IPC/USB
+queues and require an updated IPA for display. A configurable callback cap and
+the fork's downstream UART buffer limits still require game-visible edge tests.
+See [HOOK-IO.md](HOOK-IO.md). This does not unblock video acceptance by itself.
+
 Reference: Microsoft's [Thread.Sleep documentation](https://learn.microsoft.com/en-us/dotnet/api/system.threading.thread.sleep)
 explains that the requested timeout depends on clock resolution; it is not a
 precise scheduling contract. Existing capture/codec references remain in PLAN.md.

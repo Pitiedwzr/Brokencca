@@ -2,7 +2,7 @@ Brokencca initial implementation, 2026.
 Licensed under GPL-3.0-or-later; see LICENSE.
 
 Touch geometry, serial packet layout, and serial startup response constants
-are adapted from toucca (https://github.com/Pitiedwzr/toucca), revision adc6b7a,
+are adapted from toucca (https://github.com/BlueGlassBlock/toucca), revision adc6b7a,
 which is licensed GPL-3.0-or-later. Adaptations separate protocol and state from
 the UI, add explicit framing and lifecycle handling, and change serial writing
 to a single worker with complete immutable snapshots.
@@ -13,6 +13,17 @@ WACVR by xiaopeng12138; MaiTouchSensorEmulator by Leapward-Koex.
 Brokenithm-iOS by esterTion is the architectural reference for iOS-listener /
 Windows-usbmux-client connectivity. No Brokenithm app source or vendored
 CocoaAsyncSocket code is included in this implementation.
+
+The MercuryIO 1.0 function ABI, operator-button constants, and led_data layout
+are based on the TeamTofuShop's segatools checkout, revision 8a966b2454185699e8b7d256f4ab43384c274ba0
+(games/mercuryio and games/mercuryhook). The native adapter and versioned,
+bounded shared-memory transport are implemented in Brokencca; segatools itself
+is not modified or bundled. See docs/HOOK-IO.md for compatibility scope.
+
+LED-to-cell ordering in ios/Brokencca/BCLed.h is adapted from WACVR by
+xiaopeng12138 (https://github.com/xiaopeng12138/WACVR), revision c982169,
+Assets/Script/LightManager/LightManager.cs, under GPL-3.0. WACVR and Brokenithm
+are references for shared-memory IO; neither project's DLLs are redistributed.
 
 libusbmuxd/iproxy and Apple Mobile Device Support are external dependencies,
 not redistributed here. System.IO.Ports is restored via NuGet under its own license.
