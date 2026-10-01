@@ -3,6 +3,7 @@
 #include <string.h>
 #include "../ios/Brokencca/BCTouchGeometry.h"
 #include "../ios/Brokencca/BCWire.h"
+#include "../ios/Brokencca/BCLed.h"
 
 int main(void) {
     assert(BCZoneAt(500, 500, 1000, 1000) == -1);
@@ -99,6 +100,22 @@ int main(void) {
     BCHeader(header, BCHello, 4, 0x11223344, UINT64_C(0x0102030405060708));
     assert(memcmp(header, expected, sizeof(header)) == 0);
     assert(BCGet32(header + 12) == 0x11223344);
-    puts("PASS iOS geometry (240 centres + boundaries + expansion) and wire golden fixture");
+    uint8_t led_header[BCLedHeaderSize] = {'B','C','L','D',1,0,0,0};
+    BCPut32(led_header + 8, BCLedPayloadSize); BCPut32(led_header + 12, UINT32_MAX);
+    assert(BCValidLedHeader(led_header));
+    for (int offset = 0; offset < 12; offset++) {
+        uint8_t copy[BCLedHeaderSize]; memcpy(copy, led_header, sizeof(copy)); copy[offset] ^= 0x80;
+        assert(!BCValidLedHeader(copy));
+    }
+    bool used[480] = { false };
+    for (int zone = 0; zone < 240; zone++) {
+        int index = BCLedIndexForZone(zone);
+        assert(index >= 0 && index < 479 && !(index % 2));
+        assert(!used[index] && !used[index + 1]); used[index] = used[index + 1] = true;
+    }
+    assert(BCLedIndexForZone(0) == 246 && BCLedIndexForZone(119) == 472);
+    assert(BCLedIndexForZone(120) == 238 && BCLedIndexForZone(239) == 0);
+    assert(BCLedIndexForZone(-1) == -1 && BCLedIndexForZone(240) == -1);
+    puts("PASS iOS geometry, wire fixtures, LED header and all 480 LED mappings");
     return 0;
 }

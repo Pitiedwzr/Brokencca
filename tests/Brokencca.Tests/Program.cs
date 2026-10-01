@@ -30,8 +30,13 @@ var tests = new (string Name, Func<Task> Run)[]
     ("serial per-port startup, keepalive and cancellation", SerialWorkerTests.StartupAndCancellation),
     ("serial commands serviced under queued load", SerialWorkerTests.CommandFairness),
     ("serial write failure releases and faults worker", SerialWorkerTests.WriteFailure),
-    ("serial diagnostic counters and window reset", () => Sync(SerialWorkerTests.Diagnostics))
+    ("serial diagnostic counters and window reset", () => Sync(SerialWorkerTests.Diagnostics)),
+    ("LED fragmented/coalesced framing and malformed input", HookTests.LedFraming),
+    ("hook IPC capacity, reset, owner and LED isolation", HookTests.Ipc),
+    ("LED socket failure leaves input queue unchanged", HookTests.LedIsolation)
 };
+if (OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("BROKENCCA_TEST_DLL") is not null)
+    tests = [.. tests, ("native MercuryIO ABI, mapping, edges, reset, LEDs and watchdog", HookTests.Native)];
 int failures = 0;
 foreach (var test in tests)
 {
