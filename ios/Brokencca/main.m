@@ -25,8 +25,7 @@
     uint8_t bitmap[30] = {0};
     for (UITouch *touch in self.activeTouches) {
         CGPoint p = [touch locationInView:self];
-        int zone = BCZoneAt(p.x, p.y, self.bounds.size.width, self.bounds.size.height);
-        if (zone >= 0) bitmap[zone / 8] |= (uint8_t)(1 << (zone % 8));
+        BCApplyTouch(p.x, p.y, self.bounds.size.width, self.bounds.size.height, bitmap);
     }
     NSData *state = [NSData dataWithBytes:bitmap length:30];
     NSUInteger changedZones = 0;

@@ -141,6 +141,68 @@ static void Geometry()
         double x = 500 + Math.Cos(angle) * radius * (side == 0 ? 1 : -1);
         double y = 500 + Math.Sin(angle) * radius;
         Check(TouchGeometry.ZoneAt(x, y, 1000, 1000) == side * 120 + ring * 30 + sector);
+        var z = TouchGeometry.ZonesForPoint(x, y, 1000, 1000);
+        Check(z.Length == 1 && z[0] == side * 120 + ring * 30 + sector);
+    }
+
+    // Boundary expansion tests
+    Check(TouchGeometry.ZonesForPoint(500, 500, 1000, 1000).Length == 0);
+
+    // Sector boundary expansion within same side (sector 5 close to 4)
+    {
+        double angle = -Math.PI / 2 + (5.0 + 0.1) * Math.PI / 30;
+        double radius = 500 * 0.65;
+        double x = 500 + Math.Cos(angle) * radius;
+        double y = 500 + Math.Sin(angle) * radius;
+        var z = TouchGeometry.ZonesForPoint(x, y, 1000, 1000);
+        Check(z.Length == 2 && z[0] == 5 && z[1] == 4);
+    }
+
+    // Sector boundary expansion across top 12 o'clock (side 0, sector 0 close to side 1, sector 0)
+    {
+        double angle = -Math.PI / 2 + (0.0 + 0.1) * Math.PI / 30;
+        double radius = 500 * 0.65;
+        double x = 500 + Math.Cos(angle) * radius;
+        double y = 500 + Math.Sin(angle) * radius;
+        var z = TouchGeometry.ZonesForPoint(x, y, 1000, 1000);
+        Check(z.Length == 2 && z[0] == 0 && z[1] == 120);
+    }
+
+    // Sector boundary expansion across bottom 6 o'clock (side 0, sector 29 close to side 1, sector 29)
+    {
+        double angle = -Math.PI / 2 + (29.0 + 0.9) * Math.PI / 30;
+        double radius = 500 * 0.65;
+        double x = 500 + Math.Cos(angle) * radius;
+        double y = 500 + Math.Sin(angle) * radius;
+        var z = TouchGeometry.ZonesForPoint(x, y, 1000, 1000);
+        Check(z.Length == 2 && z[0] == 29 && z[1] == 149);
+    }
+
+    // Radial boundary expansion across ring 0 and ring 1 (sector 5 center, radius 500 * 0.69)
+    {
+        double angle = -Math.PI / 2 + 5.5 * Math.PI / 30;
+        double radius = 500 * 0.69;
+        double x = 500 + Math.Cos(angle) * radius;
+        double y = 500 + Math.Sin(angle) * radius;
+        var z = TouchGeometry.ZonesForPoint(x, y, 1000, 1000);
+        Check(z.Length == 2 && z[0] == 5 && z[1] == 35);
+    }
+
+    // Corner expansion (both sector 5/4 and ring 0/1) -> 4 zones
+    {
+        double angle = -Math.PI / 2 + (5.0 + 0.1) * Math.PI / 30;
+        double radius = 500 * 0.69;
+        double x = 500 + Math.Cos(angle) * radius;
+        double y = 500 + Math.Sin(angle) * radius;
+        var z = TouchGeometry.ZonesForPoint(x, y, 1000, 1000);
+        Check(z.Length == 4 && z.SequenceEqual([5, 4, 35, 34]));
+
+        // Verify ApplyTouch
+        byte[] bitmap = new byte[30];
+        TouchGeometry.ApplyTouch(x, y, 1000, 1000, bitmap);
+        var state = new TouchState(bitmap);
+        for (int i = 0; i < 240; i++)
+            Check(state[i] == (i is 5 or 4 or 35 or 34));
     }
 }
 
