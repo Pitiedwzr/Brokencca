@@ -24,7 +24,13 @@ jobs:
           install: mingw-w64-x86_64-gcc
       - name: Build and test MercuryIO DLL and portable LED mapping
         shell: pwsh
-        run: ./scripts/build-hook.ps1 -Compiler C:/msys64/mingw64/bin/gcc.exe -OutputDirectory artifacts/windows -Test
+        run: |
+          $gcc = Get-Command gcc.exe -ErrorAction Stop
+          Write-Host "Using compiler: $($gcc.Source)"
+          ./scripts/build-hook.ps1 `
+            -Compiler gcc.exe `
+            -OutputDirectory artifacts/windows `
+            -Test
       - name: Smoke test published host
         shell: pwsh
         run: ./scripts/smoke-test.ps1
