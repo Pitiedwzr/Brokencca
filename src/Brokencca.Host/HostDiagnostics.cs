@@ -13,6 +13,13 @@ public sealed class HostDiagnostics : IInputSessionObserver
     private readonly List<double> queueAgesMs = [];
     private readonly List<double> serialWriteDurationsMs = [];
     private readonly List<double> receiveToSerialMs = [];
+    private readonly List<double> receiveToHookMs = [];
+    private uint hookDepth;
+    private bool hookConnected;
+    private uint hookWatchdogResets;
+    private uint ledSequence;
+    private double ledCaptureAgeMs;
+    private int ledPayloadsSent;
     private readonly List<double> workerIntervalsMs = [];
     private readonly List<double>[] portWriteDurationsMs = [new(), new()];
     private readonly int[] driverBytesHighWater = new int[2];
@@ -83,6 +90,14 @@ public sealed class HostDiagnostics : IInputSessionObserver
         lock (gate) receiveToSerialMs.Add(durationMs);
     }
 
+    public void HookCompleted(double durationMs) { lock (gate) receiveToHookMs.Add(durationMs); }
+    public void HookStatus(uint depth, bool connected, uint watchdogResets)
+    {
+        lock (gate) { hookDepth = depth; hookConnected = connected; hookWatchdogResets = watchdogResets; }
+    }
+    public void LedCapture(uint sequence, double ageMs) { lock (gate) { ledSequence = sequence; ledCaptureAgeMs = ageMs; } }
+    public void LedSent() { lock (gate) ledPayloadsSent++; }
+
     public void WorkerIteration(double intervalMs)
     {
         lock (gate) workerIntervalsMs.Add(intervalMs);
@@ -134,6 +149,13 @@ public sealed class HostDiagnostics : IInputSessionObserver
                 queue_overflows = queueOverflows,
                 serial_write_ms = Summary(serialWriteDurationsMs),
                 receive_to_serial_ms = Summary(receiveToSerialMs),
+                receive_to_hook_sampled_ms = Summary(receiveToHookMs),
+                hook_queue_depth = hookDepth,
+                hook_connected = hookConnected,
+                hook_watchdog_resets_total = hookWatchdogResets,
+                led_capture_sequence = ledSequence,
+                led_capture_age_ms = Math.Round(ledCaptureAgeMs, 3),
+                led_payloads_sent = ledPayloadsSent,
                 worker_interval_ms = Summary(workerIntervalsMs),
                 left_write_ms = Summary(portWriteDurationsMs[0]),
                 right_write_ms = Summary(portWriteDurationsMs[1]),
@@ -142,12 +164,14 @@ public sealed class HostDiagnostics : IInputSessionObserver
             };
             frames = touches = resets = sequenceGaps = receiverStalls = queueHighWater = queueResets = queueOverflows = 0;
             oldestQueueAgeMs = 0;
+            ledPayloadsSent = 0;
             arrivalIntervalsMs.Clear();
             senderIntervalsMs.Clear();
             sinkDurationsMs.Clear();
             queueAgesMs.Clear();
             serialWriteDurationsMs.Clear();
             receiveToSerialMs.Clear();
+            receiveToHookMs.Clear();
             workerIntervalsMs.Clear();
             foreach (var durations in portWriteDurationsMs) durations.Clear();
             Array.Clear(driverBytesHighWater);

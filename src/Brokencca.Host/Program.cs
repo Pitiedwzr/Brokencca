@@ -19,6 +19,10 @@ static async Task<int> RunAsync(string[] args)
               --quiet                Suppress per-state dry-run output
               --diagnostics          Emit one machine-readable timing report per second
               --serial               Enable WACCA serial output; start before the game
+              --hook                 Enable the Brokencca MercuryIO DLL backend instead
+              --hook-rate 240        Maximum hook callbacks/s (60..1000); game sampling still applies
+              --leds                 Forward hook LEDs on a separate USB connection (new IPA required)
+              --led-port 24866       Loopback port forwarded to iOS LED listener 24866
               --left COM5            Host port paired with game COM3
               --right COM6           Host port paired with game COM4
               --port 24864           Loopback port forwarded to iOS by iproxy
@@ -34,20 +38,31 @@ static async Task<int> RunAsync(string[] args)
     using var stop = new CancellationTokenSource();
     Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
     SerialTouchSink? serial = null;
+    HookTouchSink? hook = null;
     Process? proxy = null;
     Task? serialTask = null;
     Task? connectionTask = null;
     Task? proxyTask = null;
     Task? diagnosticsTask = null;
+    Task? ledTask = null;
+    Task? hookTask = null;
     try
     {
         var options = Parse(args);
         if (!int.TryParse(options.GetValueOrDefault("--port", "24864"), out int port) || port is < 1 or > 65535)
             throw new ArgumentException("--port must be between 1 and 65535.");
         bool useSerial = options.ContainsKey("--serial");
+        bool useHook = options.ContainsKey("--hook");
+        bool useLeds = options.ContainsKey("--leds");
+        if ((useSerial ? 1 : 0) + (useHook ? 1 : 0) + (options.ContainsKey("--dry-run") ? 1 : 0) > 1)
+            throw new ArgumentException("Choose only one of --serial, --hook, or --dry-run.");
+        if (useLeds && !useHook) throw new ArgumentException("--leds requires --hook.");
+        if (!int.TryParse(options.GetValueOrDefault("--led-port", "24866"), out int ledPort) || ledPort is < 1 or > 65535 || (useLeds && ledPort == port))
+            throw new ArgumentException("--led-port must be a distinct valid port.");
+        if (!int.TryParse(options.GetValueOrDefault("--hook-rate", "240"), out int hookRate) || hookRate is < 60 or > 1000)
+            throw new ArgumentException("--hook-rate must be between 60 and 1000.");
         bool diagnosticMode = options.ContainsKey("--diagnostics");
         bool quiet = options.ContainsKey("--quiet");
-        if (useSerial && options.ContainsKey("--dry-run")) throw new ArgumentException("Choose --serial or --dry-run.");
         if (options.ContainsKey("--udid") && !options.ContainsKey("--iproxy"))
             throw new ArgumentException("--udid requires --iproxy.");
         if (useSerial)
@@ -59,6 +74,11 @@ static async Task<int> RunAsync(string[] args)
         }
         HostDiagnostics? diagnostics = serial?.Diagnostics ?? (diagnosticMode ? new HostDiagnostics() : null);
         ITouchSink sink = serial is null ? new ConsoleTouchSink(quiet) : serial;
+        if (useHook)
+        {
+            if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Hook backend requires Windows.");
+            hook = new(diagnostics, hookRate); sink = hook;
+        }
         if (options.TryGetValue("--iproxy", out string? executable))
         {
             var start = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true };
@@ -66,17 +86,21 @@ static async Task<int> RunAsync(string[] args)
             if (options.TryGetValue("--udid", out string? udid))
             { start.ArgumentList.Add("-u"); start.ArgumentList.Add(udid); }
             start.ArgumentList.Add($"{port}:24864");
+            if (useLeds) start.ArgumentList.Add($"{ledPort}:24866");
             proxy = Process.Start(start) ?? throw new IOException("Could not start iproxy.");
             proxyTask = proxy.WaitForExitAsync(stop.Token);
         }
-        Console.WriteLine(useSerial ? "Serial output enabled." : "Dry run: no serial ports opened.");
+        Console.WriteLine(useSerial ? "Serial output enabled." : useHook ? "MercuryIO hook output enabled; no COM ports opened." : "Dry run: no serial ports opened.");
         if (diagnostics is not null)
         {
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 kind = "run_info",
                 revision = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
-                sink = useSerial ? "serial" : quiet ? "dry-run-quiet" : "dry-run-console",
+                sink = useSerial ? "serial" : useHook ? "hook" : quiet ? "dry-run-quiet" : "dry-run-console",
+                hook_api = useHook ? "1.0" : null,
+                hook_rate = useHook ? hookRate : 0,
+                leds = useLeds,
                 os = RuntimeInformation.OSDescription,
                 host_name = Environment.MachineName,
                 device_model = options.GetValueOrDefault("--device-model", "unknown"),
@@ -90,9 +114,16 @@ static async Task<int> RunAsync(string[] args)
         }
         Console.WriteLine($"Connecting to iOS through 127.0.0.1:{port}. Ctrl+C to stop.");
         serialTask = serial?.RunAsync(stop.Token);
+        if (hook is not null && OperatingSystem.IsWindows())
+        {
+            hookTask = hook.RunAsync(stop.Token);
+            if (useLeds) ledTask = LedForwarder.RunAsync(hook, ledPort, stop.Token);
+        }
         connectionTask = ConnectLoopAsync(port, sink, diagnostics, stop.Token);
         var tasks = new List<Task> { connectionTask };
         if (serialTask is not null) tasks.Add(serialTask);
+        if (hookTask is not null) tasks.Add(hookTask);
+        if (ledTask is not null) tasks.Add(ledTask);
         if (proxyTask is not null) tasks.Add(proxyTask);
         Task completed = await Task.WhenAny(tasks);
         await completed;
@@ -104,9 +135,10 @@ static async Task<int> RunAsync(string[] args)
     finally
     {
         stop.Cancel();
-        foreach (Task? task in new[] { connectionTask, serialTask, proxyTask, diagnosticsTask })
+        foreach (Task? task in new[] { connectionTask, serialTask, hookTask, ledTask, proxyTask, diagnosticsTask })
             if (task is not null) try { await task; } catch (Exception) { /* Error reported by supervisor. */ }
         serial?.Dispose();
+        if (hook is not null && OperatingSystem.IsWindows()) hook.Dispose();
         if (proxy is not null)
         {
             if (!proxy.HasExited) proxy.Kill(entireProcessTree: true);
@@ -121,8 +153,8 @@ static Dictionary<string, string> Parse(string[] args)
     for (int i = 0; i < args.Length; i++)
     {
         string name = args[i];
-        if (name is "--serial" or "--dry-run" or "--quiet" or "--diagnostics") { options.Add(name, "true"); continue; }
-        if (name is not ("--left" or "--right" or "--port" or "--iproxy" or "--udid" or "--device-model" or "--gpu"))
+        if (name is "--serial" or "--hook" or "--leds" or "--dry-run" or "--quiet" or "--diagnostics") { options.Add(name, "true"); continue; }
+        if (name is not ("--left" or "--right" or "--port" or "--iproxy" or "--udid" or "--device-model" or "--gpu" or "--hook-rate" or "--led-port"))
             throw new ArgumentException($"Unknown option {name}. Use --help.");
         if (++i >= args.Length || args[i].StartsWith("--")) throw new ArgumentException($"Missing value for {name}.");
         options.Add(name, args[i]);
