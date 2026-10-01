@@ -121,11 +121,13 @@ increase the queue limit. Re-test on the user's game machine before moving on.
 Detailed deliverables, overload decisions, and acceptance criteria are in
 [NEXT-STEPS.md](NEXT-STEPS.md).
 
-Implementation has started with the Step 1 diagnostic build: quiet dry-run,
-aggregate host/iOS timing counters, categorized disconnect records, serial queue
-and write measurements, and rate-controlled simulator workloads are present.
-Physical baselines from both PCs and the iOS device are still required before
-the Step 2 scheduling changes are selected.
+The diagnostic build and physical serial/iOS baseline are available. Six
+reproduced host FIFO overflows, with sub-millisecond writes during their windows,
+justify the Step 2 host-worker revision now implemented: signalled dedicated
+worker, bounded draining, writes outside the producer lock, generation-safe
+reset, and per-port/receive-to-completion diagnostics. The 64-entry FIFO and
+input semantics are unchanged. Hardware before/after acceptance remains pending;
+see [VALIDATION.md](VALIDATION.md) for evidence and retest instructions.
 
 ## Milestone 2: window capture proof (after input stabilization)
 
@@ -192,8 +194,9 @@ GitHub Actions builds Windows and an **unsigned** iOS device artifact on macOS.
 The iOS artifact requires external signing/provisioning before installation.
 The workflow does not supply signing credentials or demonstrate device behavior.
 XcodeGen generates the Xcode project from `ios/project.yml`; iOS 15 is the current
-prototype deployment minimum. Actual device model, GPU, capture resolution,
-device throughput, and measured latency remain unknown.
+prototype deployment minimum. The tested setup is an iPad mini (5th generation)
+and AMD RX6650 XT game PC. Capture resolution, video throughput, and end-to-end
+touch-to-game/display latency remain unmeasured.
 
 ## References
 

@@ -1,115 +1,151 @@
 using System.Diagnostics;
-using System.IO.Ports;
 using Brokencca.Core;
 
 namespace Brokencca.Host;
 
 // One worker owns all serial I/O. A bounded FIFO preserves transitions; reset discards stale work.
-public sealed class SerialTouchSink : ITouchSink, IDisposable
+public sealed class SerialTouchSink : ITimedTouchSink, IDisposable
 {
-    private readonly object gate = new();
-    private readonly Queue<(TouchState State, long Enqueued)> pending = new();
-    private readonly SerialPort left;
-    private readonly SerialPort right;
+    private readonly TouchOutputQueue pending;
+    private readonly AutoResetEvent wake = new(false);
+    private readonly ISerialEndpoint left;
+    private readonly ISerialEndpoint right;
     private readonly List<byte>[] incoming = [new(), new()];
     private readonly long[] lastByte = new long[2];
     private readonly bool[] scanning = new bool[2];
     private readonly HostDiagnostics? diagnostics;
-    private TouchState accepted = TouchState.Empty;
-    private TouchState current = TouchState.Empty;
     private byte counter;
     public HostDiagnostics? Diagnostics => diagnostics;
 
     public SerialTouchSink(string leftPort, string rightPort, HostDiagnostics? diagnostics = null)
+        : this(OpenPorts(leftPort, rightPort), diagnostics) { }
+
+    private SerialTouchSink((ISerialEndpoint Left, ISerialEndpoint Right) ports, HostDiagnostics? diagnostics)
+        : this(ports.Left, ports.Right, diagnostics) { }
+
+    internal SerialTouchSink(ISerialEndpoint left, ISerialEndpoint right, HostDiagnostics? diagnostics = null)
     {
         this.diagnostics = diagnostics;
-        left = NewPort(leftPort);
-        right = NewPort(rightPort);
-        try { left.Open(); right.Open(); }
-        catch { left.Dispose(); right.Dispose(); throw; }
+        pending = new(diagnostics);
+        this.left = left;
+        this.right = right;
+        left.DataAvailable += Signal;
+        right.DataAvailable += Signal;
     }
 
-    private static SerialPort NewPort(string name) => new(name, 115200, Parity.None, 8, StopBits.One)
-    { ReadTimeout = 100, WriteTimeout = 100, Handshake = Handshake.None };
-
-    public void Apply(TouchState state)
+    private static (ISerialEndpoint, ISerialEndpoint) OpenPorts(string leftName, string rightName)
     {
-        lock (gate)
-        {
-            if (accepted.SameAs(state)) return;
-            if (pending.Count >= 64)
-            {
-                diagnostics?.QueueOverflow();
-                Reset();
-                throw new IOException("Serial input queue overflow; releasing all touches.");
-            }
-            accepted = state;
-            pending.Enqueue((state, Stopwatch.GetTimestamp()));
-            diagnostics?.QueueEnqueued(pending.Count,
-                Stopwatch.GetElapsedTime(pending.Peek().Enqueued).TotalMilliseconds);
-        }
+        var left = new SerialEndpoint(leftName);
+        try { return (left, new SerialEndpoint(rightName)); }
+        catch { left.Dispose(); throw; }
+    }
+
+    private void Signal()
+    {
+        try { wake.Set(); }
+        catch (ObjectDisposedException) { /* An already-dispatched port callback may race disposal. */ }
+    }
+
+    public void Apply(TouchState state) => Apply(state, Stopwatch.GetTimestamp());
+
+    public void Apply(TouchState state, long arrivalTimestamp)
+    {
+        try { pending.Apply(state, arrivalTimestamp); }
+        finally { Signal(); } // Includes overflow's fail-safe release.
     }
 
     public void Reset()
     {
-        lock (gate)
-        {
-            pending.Clear();
-            accepted = TouchState.Empty;
-            pending.Enqueue((TouchState.Empty, Stopwatch.GetTimestamp()));
-            diagnostics?.QueueReset();
-        }
+        pending.Reset();
+        Signal();
     }
 
-    public Task RunAsync(CancellationToken token) => Task.Run(() =>
+    public Task RunAsync(CancellationToken token) => Task.Factory.StartNew(() =>
     {
         long lastSent = 0;
+        long previousIteration = Stopwatch.GetTimestamp();
+        using var cancellation = token.Register(Signal);
         try
         {
             while (!token.IsCancellationRequested)
             {
+                long iteration = Stopwatch.GetTimestamp();
+                diagnostics?.WorkerIteration(Stopwatch.GetElapsedTime(previousIteration, iteration).TotalMilliseconds);
+                previousIteration = iteration;
                 ReadCommands(left, 0);
                 ReadCommands(right, 1);
-                lock (gate)
+                // Revisit commands, resets and cancellation between bounded batches.
+                // There is no sleep between ready transitions.
+                for (int drained = 0; drained < 16 && !token.IsCancellationRequested; drained++)
                 {
-                    bool changed = pending.TryDequeue(out var next);
-                    if (changed)
-                    {
-                        current = next.State;
-                        diagnostics?.QueueDequeued(Stopwatch.GetElapsedTime(next.Enqueued).TotalMilliseconds);
-                    }
-                    if (changed || Stopwatch.GetElapsedTime(lastSent).TotalMilliseconds >= 100)
-                    {
-                        SendCurrent();
-                        lastSent = Stopwatch.GetTimestamp();
-                    }
+                    if (!pending.TryTake(out var next)) break;
+                    if (!pending.TryActivate(next)) continue;
+                    diagnostics?.QueueDequeued(Stopwatch.GetElapsedTime(next.Enqueued).TotalMilliseconds);
+                    SendCurrent(next.State, next.Received);
+                    lastSent = Stopwatch.GetTimestamp();
+                    if (Stopwatch.GetElapsedTime(iteration).TotalMilliseconds >= 2) break;
                 }
-                Thread.Sleep(1);
+                if (token.IsCancellationRequested) break;
+                if (!pending.TryHeartbeat(out var heartbeat)) continue;
+                if (Stopwatch.GetElapsedTime(lastSent).TotalMilliseconds >= 100 && pending.TryActivate(heartbeat))
+                {
+                    SendCurrent(heartbeat.State);
+                    lastSent = Stopwatch.GetTimestamp();
+                }
+                // Touch producers/data arrival/cancellation wake immediately. The timeout
+                // maintains the inherited command idle-gap parser and serial keepalive.
+                wake.WaitOne(WaitMilliseconds(lastSent));
             }
         }
         finally
         {
-            lock (gate)
+            pending.Reset();
+            // A broken port must not prevent best-effort release on the other half.
+            counter = (byte)((counter + 1) & 127);
+            var packets = SerialPackets.Encode(TouchState.Empty, counter);
+            for (int side = 0; side < 2; side++)
             {
-                current = TouchState.Empty;
-                pending.Clear();
-                try { SendCurrent(); }
-                catch (Exception ex) { Console.Error.WriteLine($"Final serial release failed: {ex.Message}"); }
+                if (!scanning[side]) continue;
+                var port = side == 0 ? left : right;
+                try { WritePort(port, side, side == 0 ? packets.Left : packets.Right); }
+                catch (Exception ex) { Console.Error.WriteLine($"Final serial release failed on {port.PortName}: {ex.Message}"); }
             }
         }
-    }, CancellationToken.None);
+    }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
 
-    private void SendCurrent()
+    private int WaitMilliseconds(long lastSent)
+    {
+        double wait = Math.Min(10, Math.Max(0, 100 - Stopwatch.GetElapsedTime(lastSent).TotalMilliseconds));
+        for (int side = 0; side < 2; side++)
+            if (incoming[side].Count > 0)
+            {
+                double gap = incoming[side][0] == 0x72 && incoming[side].Count < 4 ? 100 : 3;
+                wait = Math.Min(wait, Math.Max(0, gap - Stopwatch.GetElapsedTime(lastByte[side]).TotalMilliseconds));
+            }
+        return (int)Math.Ceiling(wait);
+    }
+
+    private void SendCurrent(TouchState state, long received = 0)
     {
         long started = Stopwatch.GetTimestamp();
         counter = (byte)((counter + 1) & 127);
-        var packets = SerialPackets.Encode(current, counter);
-        if (scanning[0]) left.Write(packets.Left, 0, packets.Left.Length);
-        if (scanning[1]) right.Write(packets.Right, 0, packets.Right.Length);
-        diagnostics?.SerialWrite(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        var packets = SerialPackets.Encode(state, counter);
+        if (scanning[0]) WritePort(left, 0, packets.Left);
+        if (scanning[1]) WritePort(right, 1, packets.Right);
+        if (scanning[0] || scanning[1]) diagnostics?.SerialWrite(Stopwatch.GetElapsedTime(started).TotalMilliseconds);
+        if (received != 0 && scanning[0] && scanning[1])
+            diagnostics?.SerialCompleted(Stopwatch.GetElapsedTime(received).TotalMilliseconds);
     }
 
-    private void ReadCommands(SerialPort port, int side)
+    private void WritePort(ISerialEndpoint port, int side, byte[] bytes)
+    {
+        long started = Stopwatch.GetTimestamp();
+        port.Write(bytes, 0, bytes.Length);
+        if (diagnostics is not null)
+            diagnostics.PortWrite(side, Stopwatch.GetElapsedTime(started).TotalMilliseconds, port.BytesToWrite);
+    }
+
+    private void ReadCommands(ISerialEndpoint port, int side)
     {
         // toucca handles request/response bursts, not a documented length-framed protocol.
         // Accumulate binary bytes across reads and wait for a gap instead of ReadExisting's text decoding.
@@ -135,10 +171,17 @@ public sealed class SerialTouchSink : ITouchSink, IDisposable
         bytes.Clear();
         if (command is 0xa0 or 0xa8 or 0xa2 or 0x94 or 0x72 or 0x9a) scanning[side] = false;
         byte[] response = SerialPackets.Response(command, side == 0, address);
-        if (response.Length > 0) port.Write(response, 0, response.Length);
+        if (response.Length > 0) WritePort(port, side, response);
         if (command == 0xc9) scanning[side] = true;
         Console.WriteLine($"{port.PortName}: command 0x{command:X2}, response {response.Length} bytes.");
     }
 
-    public void Dispose() { left.Dispose(); right.Dispose(); }
+    public void Dispose()
+    {
+        left.DataAvailable -= Signal;
+        right.DataAvailable -= Signal;
+        left.Dispose();
+        right.Dispose();
+        wake.Dispose();
+    }
 }

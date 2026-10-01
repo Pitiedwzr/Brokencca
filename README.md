@@ -6,7 +6,8 @@ backend and Brokenithm-iOS's usbmux connection model.
 **Playable input prototype, validated by the user on real hardware.** IPA,
 multitouch, USB forwarding, and WACCA serial input work on the tested setup.
 Heavy multitouch/fast movement can cause delay or an overflow/reconnect; reducing
-that latency is the next milestone. Window/video streaming remains planned at
+that latency is the next milestone. A host scheduling fix is implemented and
+awaits game-PC retesting; see the validation report. Window/video streaming remains planned at
 **60 fps** and is not implemented yet. Use the PC display for this milestone.
 
 - [Implementation plan and remaining milestones](docs/PLAN.md)
@@ -107,6 +108,16 @@ dotnet run --project src/Brokencca.Host -c Release -- --serial --left COM5 --rig
 Keep iproxy running, or pass `--iproxy` to the command above. Default mode is
 dry-run; COM ports open only with `--serial`. Ctrl+C requests an all-release and
 shuts down. The game must complete board startup before packets are emitted.
+The `0.2.0-serial-worker` revision uses a signalled serial worker without a sleep
+between queued transitions. It preserves press/release ordering, the 64-state
+safety limit, and the iOS boundary expansion. Replace the complete Windows
+publish folder, not just its EXE; no IPA update is needed for this host-only fix.
+Use `--diagnostics` for the before/after test. New fields include
+`receive_to_serial_ms` (valid touch receipt through both COM writes returning),
+`left_write_ms`/`right_write_ms`, driver-buffer high-water marks, and
+`worker_interval_ms` (including idle waits). COM completion is not proof of
+game consumption. See [the retest checklist](docs/VALIDATION.md#serial-worker-retest).
+
 The inherited burst-based serial command parsing works in the reported gameplay
 test but still needs fragmentation/restart coverage; see the plan's compatibility
 limit. The iOS layout preserves toucca's unusual

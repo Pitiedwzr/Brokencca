@@ -1,4 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
   <ItemGroup><ProjectReference Include="../../src/Brokencca.Core/Brokencca.Core.csproj" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../../src/Brokencca.Host/Brokencca.Host.csproj" /></ItemGroup>
 </Project>

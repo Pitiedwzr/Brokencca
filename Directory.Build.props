@@ -6,6 +6,6 @@
     <LangVersion>12</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Version>0.2.0</Version>
-    <InformationalVersion>0.2.0-diagnostics</InformationalVersion>
+    <InformationalVersion>0.2.0-serial-worker</InformationalVersion>
   </PropertyGroup>
 </Project>

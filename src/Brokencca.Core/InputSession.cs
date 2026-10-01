@@ -6,6 +6,11 @@ public interface ITouchSink
     void Reset();
 }
 
+public interface ITimedTouchSink : ITouchSink
+{
+    void Apply(TouchState state, long arrivalTimestamp);
+}
+
 public interface IInputSessionObserver
 {
     void MessageReceived(MessageType type, uint sequence, ulong senderTimestampUs, long arrivalTimestamp);
@@ -45,7 +50,11 @@ public sealed class InputSession(ITouchSink sink, TimeSpan? idleTimeout = null, 
                 long sinkStarted = System.Diagnostics.Stopwatch.GetTimestamp();
                 switch (message.Type)
                 {
-                    case MessageType.Touch: sink.Apply(new(message.Payload)); break;
+                    case MessageType.Touch:
+                        var state = new TouchState(message.Payload);
+                        if (sink is ITimedTouchSink timed) timed.Apply(state, arrived);
+                        else sink.Apply(state);
+                        break;
                     case MessageType.Reset: sink.Reset(); break;
                     // Controller sends full snapshots every 100 ms; other messages cannot renew its lease.
                     default: throw new InvalidDataException("Expected TOUCH or RESET after handshake.");

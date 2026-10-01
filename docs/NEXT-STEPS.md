@@ -19,11 +19,12 @@ Reported symptoms:
 - Delay during rapid taps.
 - Extreme ten-contact movement produces a reported overflow and 1 s reconnect.
 
-Queueing/processing backpressure is a working hypothesis, **not a diagnosis**.
-The report places overflow alongside dry-run testing, while the current dry-run
-sink has no touch FIFO. Dry-run logs every changed state synchronously; the serial
-sink and the iOS sender have separate 64-entry guards. Exact build/mode/error
-capture is therefore the first task.
+The initial report did not distinguish the host and iOS overflow guards.
+The latest paired serial-mode logs now confirm six **host serial FIFO** overflows:
+depth 64, queue age up to 733.269 ms, while serial writes in those reporting
+windows took at most 0.334 ms. This localizes the sustained backlog to the host
+serial worker and strongly supports a scheduling/service-rate problem, not a
+demonstrated baud-rate limit. See [VALIDATION.md](VALIDATION.md) for the baseline.
 
 ## Step 1 — Diagnostic build and reproducible baseline
 
@@ -183,10 +184,30 @@ callback/contact/change counts, transport dispatch delay, pending-write depth an
 age, and send-completion delay in once-per-second `BCCA_DIAG` logs. Protocol v1
 framing is unchanged.
 
-Still required for Step 1: capture baselines from both physical PCs and the iOS
-device, add opt-in bounded detailed traces if aggregate counters cannot localize
-the delay, and record the actual device/GPU/build/iproxy metadata. Step 2 changes
-remain conditional on those measurements.
+The paired device/game-PC baseline now supplies build/device/GPU/iproxy metadata
+and localizes the reproduced overflow sufficiently to select Step 2. Opt-in
+bounded detailed traces remain conditional on unexplained issues; do not delay
+the measured scheduling fix to add unrelated instrumentation.
+
+Step 2 is implemented in `0.2.0-serial-worker`: a dedicated signalled I/O owner,
+no per-transition sleep, bounded command-service batches (16 transitions or
+2 ms, whichever comes first), COM writes outside the producer lock, and reset
+generations that invalidate already-dequeued old work. The FIFO remains 64;
+only exact duplicate snapshots are suppressed. Startup responses, mapping,
+115200 setting, keepalive, iOS boundary expansion, and protocol v1 are unchanged.
+Shutdown attempts release independently on both ports if one has failed.
+
+Diagnostics now include `receive_to_serial_ms`, per-port write durations,
+driver-buffer high-water marks, and worker iteration intervals. The receive-to-
+serial metric excludes heartbeats/synthetic releases and requires both boards
+to be scanning. It ends when both `Write` calls return, not at game consumption.
+Worker intervals include intentional idle waits; they are not per-frame latency.
+
+Automated build/regressions pass; Step 4 hardware acceptance is **pending**.
+Next: replace only the Windows host, repeat the same ten-finger stress for at
+least 60 seconds, press/release/repress, and 30-minute play in one logged game
+launch. Also check held-touch resets and game restart. No IPA update is needed
+for this host-only fix. Do not add lossy scheduling or video until this retest.
 
 Reference: Microsoft's [Thread.Sleep documentation](https://learn.microsoft.com/en-us/dotnet/api/system.threading.thread.sleep)
 explains that the requested timeout depends on clock resolution; it is not a

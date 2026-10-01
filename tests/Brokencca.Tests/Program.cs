@@ -21,7 +21,16 @@ var tests = new (string Name, Func<Task> Run)[]
     ("input diagnostics observe frames and sequence gaps", DiagnosticsObserver),
     ("wrong handshake releases state", WrongHandshake),
     ("partial frame timeout releases state", PartialTimeout),
-    ("cancellation releases held touch", Cancellation)
+    ("cancellation releases held touch", Cancellation),
+    ("serial queue reset invalidates dequeued work", () => Sync(SerialWorkerTests.QueueGeneration)),
+    ("serial queue bounded overflow and duplicates", () => Sync(SerialWorkerTests.QueueOverflow)),
+    ("serial worker preserves a full burst", SerialWorkerTests.OrderedBurst),
+    ("serial reset while a port write is blocked", SerialWorkerTests.ResetInFlight),
+    ("serial overflow while a port write is blocked", SerialWorkerTests.OverflowInFlight),
+    ("serial per-port startup, keepalive and cancellation", SerialWorkerTests.StartupAndCancellation),
+    ("serial commands serviced under queued load", SerialWorkerTests.CommandFairness),
+    ("serial write failure releases and faults worker", SerialWorkerTests.WriteFailure),
+    ("serial diagnostic counters and window reset", () => Sync(SerialWorkerTests.Diagnostics))
 };
 int failures = 0;
 foreach (var test in tests)
@@ -252,6 +261,8 @@ static async Task DiagnosticsObserver()
     await peer.Touch(3, true);
     await peer.WaitForCount(2);
     Check(observer.Messages == 1 && observer.Gaps == 2 && observer.SinkCompletions == 1);
+    Check(peer.Sink.LastArrival != 0 && peer.Sink.LastArrival == observer.LastArrival,
+        "Timed sink did not receive the complete-frame arrival timestamp");
     peer.Client.Close();
     await Throws<EndOfStreamException>(() => peer.Run);
 }
@@ -281,11 +292,17 @@ sealed class FragmentStream(byte[] bytes) : MemoryStream(bytes)
     public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
         base.ReadAsync(buffer[..Math.Min(buffer.Length, 1)], cancellationToken);
 }
-sealed class RecordingSink : ITouchSink
+sealed class RecordingSink : ITimedTouchSink
 {
     private readonly List<TouchState> states = new();
+    public long LastArrival { get; private set; }
     public List<TouchState> States { get { lock (states) return states.ToList(); } }
     public void Apply(TouchState state) { lock (states) states.Add(state); }
+    public void Apply(TouchState state, long arrivalTimestamp)
+    {
+        LastArrival = arrivalTimestamp;
+        Apply(state);
+    }
     public void Reset() => Apply(TouchState.Empty);
 }
 sealed class RecordingObserver : IInputSessionObserver
@@ -293,7 +310,12 @@ sealed class RecordingObserver : IInputSessionObserver
     public int Messages { get; private set; }
     public uint Gaps { get; private set; }
     public int SinkCompletions { get; private set; }
-    public void MessageReceived(MessageType type, uint sequence, ulong senderTimestampUs, long arrivalTimestamp) => Messages++;
+    public long LastArrival { get; private set; }
+    public void MessageReceived(MessageType type, uint sequence, ulong senderTimestampUs, long arrivalTimestamp)
+    {
+        Messages++;
+        LastArrival = arrivalTimestamp;
+    }
     public void SequenceGap(uint missingMessages) => Gaps += missingMessages;
     public void SinkCompleted(MessageType type, long startedTimestamp, long completedTimestamp) => SinkCompletions++;
 }

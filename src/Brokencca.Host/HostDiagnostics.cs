@@ -12,6 +12,10 @@ public sealed class HostDiagnostics : IInputSessionObserver
     private readonly List<double> sinkDurationsMs = [];
     private readonly List<double> queueAgesMs = [];
     private readonly List<double> serialWriteDurationsMs = [];
+    private readonly List<double> receiveToSerialMs = [];
+    private readonly List<double> workerIntervalsMs = [];
+    private readonly List<double>[] portWriteDurationsMs = [new(), new()];
+    private readonly int[] driverBytesHighWater = new int[2];
     private long lastArrival;
     private ulong lastSenderTimestampUs;
     private long reportStarted = Stopwatch.GetTimestamp();
@@ -74,6 +78,25 @@ public sealed class HostDiagnostics : IInputSessionObserver
         lock (gate) serialWriteDurationsMs.Add(durationMs);
     }
 
+    public void SerialCompleted(double durationMs)
+    {
+        lock (gate) receiveToSerialMs.Add(durationMs);
+    }
+
+    public void WorkerIteration(double intervalMs)
+    {
+        lock (gate) workerIntervalsMs.Add(intervalMs);
+    }
+
+    public void PortWrite(int side, double durationMs, int pendingDriverBytes)
+    {
+        lock (gate)
+        {
+            portWriteDurationsMs[side].Add(durationMs);
+            driverBytesHighWater[side] = Math.Max(driverBytesHighWater[side], pendingDriverBytes);
+        }
+    }
+
     public void QueueReset()
     {
         lock (gate) queueResets++;
@@ -109,7 +132,13 @@ public sealed class HostDiagnostics : IInputSessionObserver
                 oldest_queue_age_ms = Math.Round(oldestQueueAgeMs, 3),
                 queue_resets = queueResets,
                 queue_overflows = queueOverflows,
-                serial_write_ms = Summary(serialWriteDurationsMs)
+                serial_write_ms = Summary(serialWriteDurationsMs),
+                receive_to_serial_ms = Summary(receiveToSerialMs),
+                worker_interval_ms = Summary(workerIntervalsMs),
+                left_write_ms = Summary(portWriteDurationsMs[0]),
+                right_write_ms = Summary(portWriteDurationsMs[1]),
+                left_driver_bytes_high_water = driverBytesHighWater[0],
+                right_driver_bytes_high_water = driverBytesHighWater[1]
             };
             frames = touches = resets = sequenceGaps = receiverStalls = queueHighWater = queueResets = queueOverflows = 0;
             oldestQueueAgeMs = 0;
@@ -118,6 +147,10 @@ public sealed class HostDiagnostics : IInputSessionObserver
             sinkDurationsMs.Clear();
             queueAgesMs.Clear();
             serialWriteDurationsMs.Clear();
+            receiveToSerialMs.Clear();
+            workerIntervalsMs.Clear();
+            foreach (var durations in portWriteDurationsMs) durations.Clear();
+            Array.Clear(driverBytesHighWater);
             reportStarted = now;
         }
         return JsonSerializer.Serialize(report);
