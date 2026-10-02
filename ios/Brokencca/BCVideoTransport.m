@@ -43,7 +43,8 @@ static BOOL BCConfig(NSDictionary *c) {
 @property(nonatomic, strong) dispatch_queue_t queue;
 @property(nonatomic, strong) nw_listener_t listener;
 @property(nonatomic, strong) nw_connection_t connection;
-@property(nonatomic, strong) NSData *controlToken;
+// Keep the stored property distinct from the public asynchronous setControlToken: method.
+@property(nonatomic, strong) NSData *boundControlToken;
 @property(nonatomic, strong) NSMutableData *received;
 @property(nonatomic, strong) BCVideoDecoder *decoder;
 @property(nonatomic, strong) dispatch_source_t timer;
@@ -87,7 +88,10 @@ static BOOL BCConfig(NSDictionary *c) {
 }
 - (void)setControlToken:(NSData *)token {
     NSData *copy=[token copy];
-    dispatch_async(self.queue, ^{ [self disconnect]; self.lastGeneration=0; self.controlToken=copy; });
+    dispatch_async(self.queue, ^{
+        [self disconnect]; self.lastGeneration=0; self.boundControlToken=copy;
+        NSLog(@"BCCA_VIDEO control_binding=%@", copy.length==16 ? @"ready" : @"cleared");
+    });
 }
 - (void)start {
     dispatch_async(self.queue, ^{
@@ -101,7 +105,13 @@ static BOOL BCConfig(NSDictionary *c) {
         __weak BCVideoTransport *weakSelf=self;
         nw_listener_set_new_connection_handler(listener, ^(nw_connection_t connection) {
             BCVideoTransport *s=weakSelf;
-            if (!s || s.listener!=listener || s.connection || s.controlToken.length!=16) { nw_connection_cancel(connection); return; }
+            if (!s || s.listener!=listener) { nw_connection_cancel(connection); return; }
+            if (s.connection || s.boundControlToken.length!=16) {
+                NSString *reason=s.connection ? @"Another video connection is active" : @"Control video token is unavailable";
+                NSLog(@"BCCA_VIDEO rejected_connection=%@",reason);
+                [s notify:[@"Video unavailable · " stringByAppendingString:reason]];
+                nw_connection_cancel(connection); return;
+            }
             [s accept:connection];
         });
         nw_listener_set_state_changed_handler(listener, ^(nw_listener_state_t state,nw_error_t error) {
@@ -164,8 +174,8 @@ static BOOL BCConfig(NSDictionary *c) {
         }
         if (self.phase==BCVideoWaitingHello) {
             if (type!=BCVideoHello || generation || !BCNumber(json[@"videoVersion"],1,1,YES) || ![json[@"sessionToken"] isKindOfClass:NSString.class]) { [self fail:@"Expected video HELLO"]; return; }
-            NSMutableString *expected=[NSMutableString string]; const uint8_t *token=self.controlToken.bytes;
-            for (NSUInteger i=0;i<self.controlToken.length;i++) [expected appendFormat:@"%02X",token[i]];
+            NSMutableString *expected=[NSMutableString string]; const uint8_t *token=self.boundControlToken.bytes;
+            for (NSUInteger i=0;i<self.boundControlToken.length;i++) [expected appendFormat:@"%02X",token[i]];
             if ([json[@"sessionToken"] length]!=32 || [expected caseInsensitiveCompare:json[@"sessionToken"]]!=NSOrderedSame) { [self fail:@"Video control token mismatch"]; return; }
             [self send:BCVideoHelloAck json:@{@"maxWidth":@1920,@"maxHeight":@1920,@"maxPixels":@2073600,@"maxFps":@60,@"maxAuBytes":@(BCVideoMaxAU),@"profiles":@[@"main",@"baseline"],@"maxLevel":@42}];
             self.phase=BCVideoWaitingConfig; self.phaseSince=self.lastMessage; continue;
@@ -279,7 +289,7 @@ static BOOL BCConfig(NSDictionary *c) {
     if (connection) { nw_connection_set_state_changed_handler(connection,NULL); nw_connection_cancel(connection); }
 }
 - (void)stopInternal {
-    [self disconnect]; self.controlToken=nil;
+    [self disconnect]; self.boundControlToken=nil;
     if (self.timer) { dispatch_source_cancel(self.timer); self.timer=nil; }
     if (self.listener) { nw_listener_set_state_changed_handler(self.listener,NULL); nw_listener_set_new_connection_handler(self.listener,NULL); nw_listener_cancel(self.listener); self.listener=nil; }
 }

@@ -50,6 +50,7 @@ public static class VideoStreamer
         uint outgoing = 0, previous = 0;
         bool havePrevious = false;
         ulong generation = 0;
+        string receiveStage = "HELLO_ACK (before capture/encoding starts)";
         async Task Send(VideoMessageType type, byte[] payload, ulong id = 0, ulong capture = 0, bool idr = false)
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(child.Token);
@@ -59,7 +60,12 @@ public static class VideoStreamer
         async Task<VideoMessage> Receive(int timeout)
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(child.Token); deadline.CancelAfter(timeout);
-            VideoMessage message = await VideoProtocol.ReadAsync(socket, deadline.Token);
+            VideoMessage message;
+            try { message = await VideoProtocol.ReadAsync(socket, deadline.Token); }
+            catch (EndOfStreamException e)
+            {
+                throw new IOException($"Video peer closed while waiting for {receiveStage}. Check the iOS video status/log and port forwarding.", e);
+            }
             if (havePrevious && unchecked((int)(message.Sequence - previous)) <= 0) throw new InvalidDataException("Stale video peer sequence.");
             previous = message.Sequence; havePrevious = true;
             if (message.Type == VideoMessageType.Error) throw new IOException("iOS video error: " + System.Text.Encoding.UTF8.GetString(message.Payload));
@@ -90,6 +96,7 @@ public static class VideoStreamer
             int maxAu = limit.GetProperty("maxAuBytes").GetInt32();
             generation = (ulong)Interlocked.Increment(ref generations);
             await Send(VideoMessageType.Config, bootstrap.Config);
+            receiveStage = "decoder READY";
             VideoMessage acknowledged = await Receive(3000);
             if (acknowledged.Type != VideoMessageType.Ready || acknowledged.Generation != generation)
                 throw new InvalidDataException("Expected hardware decoder READY.");
@@ -104,6 +111,7 @@ public static class VideoStreamer
             int displayMilliHz = 0; long replacedDecoded = 0, pingUs = 0;
             double clockOffsetUs = 0, clockUncertaintyUs = double.PositiveInfinity;
             string thermal = "nominal";
+            receiveStage = "video feedback";
             receiver = Task.Run(async () =>
             {
                 try

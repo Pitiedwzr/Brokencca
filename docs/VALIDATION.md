@@ -335,6 +335,15 @@ is a quantitative latency guarantee. See PLAN.md for the remaining device checkl
 
 ## Video implementation checks — 2026-10-03
 
+Fixture device test exposed immediate EOF on all three video attempts before
+any encoder startup log, while input heartbeats remained healthy. Source review
+found `BCVideoTransport.setControlToken:` assigning `self.controlToken`, which
+invoked the same public setter recursively and never stored the binding token.
+The private property is now `boundControlToken`; public token changes dispatch
+once to the video queue and assign that separate property. Rejected connections
+now report their reason, and host EOF errors identify the receive phase. The
+fix requires a rebuilt IPA (build 4). Device confirmation is pending.
+
 The Windows encoder/transport and iOS decoder/Metal/touch integration are now
 implemented. Release builds have zero warnings/errors; the extended C# suite
 passes 36/36, including real Main/4.2 SPS parsing, non-B slice validation,
