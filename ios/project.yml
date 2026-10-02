@@ -9,7 +9,7 @@ settings:
     CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF: YES
     GCC_WARN_64_TO_32_BIT_CONVERSION: YES
     MARKETING_VERSION: '0.2.0'
-    CURRENT_PROJECT_VERSION: '2'
+    CURRENT_PROJECT_VERSION: '3'
 targets:
   Brokencca:
     type: application
@@ -24,6 +24,11 @@ targets:
     dependencies:
       - sdk: UIKit.framework
       - sdk: Network.framework
+      - sdk: VideoToolbox.framework
+      - sdk: CoreMedia.framework
+      - sdk: CoreVideo.framework
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
 schemes:
   Brokencca:
     build:

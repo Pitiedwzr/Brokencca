@@ -20,6 +20,8 @@ static double BCPercentile(NSArray<NSNumber *> *values, double fraction) {
 @property(nonatomic) uint32_t sequence;
 @property(nonatomic) NSUInteger pendingWrites;
 @property(nonatomic) BOOL ready;
+@property(nonatomic) uint8_t protocolVersion;
+@property(nonatomic, strong) NSData *videoSessionToken;
 @property(nonatomic, strong) NSMutableArray<NSNumber *> *pendingWriteTimes;
 @property(nonatomic) NSUInteger callbacks;
 @property(nonatomic) NSUInteger contactTotal;
@@ -88,6 +90,8 @@ static double BCPercentile(NSArray<NSNumber *> *values, double fraction) {
     [self.pendingWriteTimes removeAllObjects];
     self.lastDiagnostics = NSProcessInfo.processInfo.systemUptime;
     self.ready = NO;
+    self.protocolVersion = 1;
+    self.videoSessionToken = nil;
     nw_connection_set_queue(connection, self.queue);
     __weak BCTransport *weakSelf = self;
     nw_connection_set_state_changed_handler(connection, ^(nw_connection_state_t state, nw_error_t error) {
@@ -120,20 +124,28 @@ static double BCPercentile(NSArray<NSNumber *> *values, double fraction) {
     });
 }
 - (void)parse {
-    // Input-only v1: host sends precisely one HELLO. Future control messages require explicit support.
     if (self.received.length < BCHeaderSize) return;
     const uint8_t *p = self.received.bytes;
-    if (self.ready || memcmp(p, "BCCA", 4) || p[4] != 1 || p[5] != BCHello || p[6] || p[7] || BCGet32(p + 8) != 4) {
+    uint8_t version = p[4];
+    uint32_t payloadLength = BCGet32(p + 8);
+    if (self.ready || memcmp(p, "BCCA", 4) || p[5] != BCHello || p[6] || p[7] ||
+        !((version == 1 && payloadLength == 4) || (version == 2 && payloadLength == 24))) {
         [self disconnect:@"Incompatible host protocol"]; return;
     }
-    if (self.received.length < 28) return;
-    const uint8_t hello[] = {240, 0, 30, 0};
-    if (memcmp(p + BCHeaderSize, hello, 4) || self.received.length != 28) {
+    NSUInteger total = BCHeaderSize + payloadLength;
+    if (self.received.length < total) return;
+    if (!BCValidHello(p, total) || self.received.length != total) {
         [self disconnect:@"Unsupported controller layout"]; return;
     }
+    NSData *hello = [NSData dataWithBytes:p + BCHeaderSize length:payloadLength];
+    self.protocolVersion = version;
+    self.videoSessionToken = version == 2 ? [NSData dataWithBytes:p + BCHeaderSize + 8 length:16] : nil;
+    if (self.videoSessionChanged) self.videoSessionChanged(self.videoSessionToken);
     self.received.length = 0;
     self.ready = YES;
-    [self send:BCHello payload:[NSData dataWithBytes:hello length:4]];
+    [self send:BCHello payload:hello];
+    // Both protocol versions start released, even if fingers touched the waiting screen.
+    self.bitmap = [NSData dataWithLength:30];
     [self send:BCTouch payload:self.bitmap];
     [self notify:@"Connected · wired input" connected:YES];
     self.timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self.queue);
@@ -154,7 +166,7 @@ static double BCPercentile(NSArray<NSNumber *> *values, double fraction) {
     if (self.pendingWrites >= 64) { [self disconnect:@"USB stalled — reconnecting"]; return; }
     uint8_t header[BCHeaderSize];
     uint64_t now = (uint64_t)(NSProcessInfo.processInfo.systemUptime * 1000000.0);
-    BCHeader(header, type, (uint32_t)payload.length, self.sequence++, now);
+    BCHeaderVersion(header, self.protocolVersion, type, (uint32_t)payload.length, self.sequence++, now);
     NSMutableData *packet = [NSMutableData dataWithBytes:header length:sizeof(header)];
     [packet appendData:payload];
     // Destructor block retains packet until Network.framework has finished using its storage.
@@ -228,6 +240,8 @@ static double BCPercentile(NSArray<NSNumber *> *values, double fraction) {
     nw_connection_t connection = self.connection;
     self.connection = nil;
     self.ready = NO;
+    self.videoSessionToken = nil;
+    if (self.videoSessionChanged) self.videoSessionChanged(nil);
     self.received = nil;
     [self.pendingWriteTimes removeAllObjects];
     self.bitmap = [NSMutableData dataWithLength:30];
