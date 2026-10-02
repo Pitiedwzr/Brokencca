@@ -35,6 +35,9 @@ public sealed class HostDiagnostics : IInputSessionObserver
     private double oldestQueueAgeMs;
     private int queueResets;
     private int queueOverflows;
+    private long inputOverloadAt;
+    public bool InputOverloaded => Interlocked.Read(ref inputOverloadAt) != 0 &&
+        Stopwatch.GetElapsedTime(Interlocked.Read(ref inputOverloadAt)).TotalSeconds < 2;
 
     public void MessageReceived(MessageType type, uint sequence, ulong senderTimestampUs, long arrivalTimestamp)
     {
@@ -68,6 +71,7 @@ public sealed class HostDiagnostics : IInputSessionObserver
 
     public void QueueEnqueued(int depth, double oldestAgeMs)
     {
+        if (depth >= 48 || oldestAgeMs > 20) Interlocked.Exchange(ref inputOverloadAt, Stopwatch.GetTimestamp());
         lock (gate)
         {
             queueHighWater = Math.Max(queueHighWater, depth);
@@ -77,6 +81,7 @@ public sealed class HostDiagnostics : IInputSessionObserver
 
     public void QueueDequeued(double ageMs)
     {
+        if (ageMs > 20) Interlocked.Exchange(ref inputOverloadAt, Stopwatch.GetTimestamp());
         lock (gate) queueAgesMs.Add(ageMs);
     }
 
@@ -93,6 +98,7 @@ public sealed class HostDiagnostics : IInputSessionObserver
     public void HookCompleted(double durationMs) { lock (gate) receiveToHookMs.Add(durationMs); }
     public void HookStatus(uint depth, bool connected, uint watchdogResets)
     {
+        if (depth >= 48) Interlocked.Exchange(ref inputOverloadAt, Stopwatch.GetTimestamp());
         lock (gate) { hookDepth = depth; hookConnected = connected; hookWatchdogResets = watchdogResets; }
     }
     public void LedCapture(uint sequence, double ageMs) { lock (gate) { ledSequence = sequence; ledCaptureAgeMs = ageMs; } }
@@ -119,6 +125,7 @@ public sealed class HostDiagnostics : IInputSessionObserver
 
     public void QueueOverflow()
     {
+        Interlocked.Exchange(ref inputOverloadAt, Stopwatch.GetTimestamp());
         lock (gate) queueOverflows++;
     }
 
