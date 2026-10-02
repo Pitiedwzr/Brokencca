@@ -5,6 +5,10 @@ using Brokencca.Core;
 
 var tests = new (string Name, Func<Task> Run)[]
 {
+    ("capture crop, viewport and calibration profiles", () => Sync(CaptureTests.Geometry)),
+    ("capture slots bound GPU work and latest-frame replacement", () => Sync(CaptureTests.Slots)),
+    ("boot black circle fitting and consensus", () => Sync(CaptureTests.Calibration)),
+    ("capture device recovery is bounded", () => Sync(CaptureTests.Recovery)),
     ("wire golden bytes", () => Sync(WireGolden)),
     ("fragmented and concatenated frames", Fragments),
     ("reject malformed headers and payloads", InvalidFrames),
