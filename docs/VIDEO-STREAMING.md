@@ -355,6 +355,17 @@ available; none alone proves glass latency. Low Power Mode, thermal policy, and
 device limits can change the actual cadence despite the requested
 [preferred frame-rate range](https://developer.apple.com/documentation/quartzcore/cadisplaylink/preferredframeraterange).
 
+IPA build 6 uses three Core Animation drawables while keeping at most two GPU
+submissions and one latest pending decoded buffer. GPU completion does not imply
+Core Animation has released the currently displayed drawable. A per-frame
+autorelease pool promptly releases command-buffer/render-pass/drawable references
+after commit, following Apple's
+[drawable lifecycle guidance](https://developer.apple.com/library/archive/documentation/3DDrawing/Conceptual/MTLBestPracticesGuide/Drawables.html).
+Presentation is asynchronous (`presentsWithTransaction=NO`). Generation-scoped
+render/wait means and GPU completion timings complement display cadence and
+presentation counts; changing pool size alone does not establish lower glass
+latency or sustained 60 fps.
+
 Implement one immutable geometry snapshot shared by video and touch rendering:
 
 The steps below describe the selectable **Full image** mode. As of IPA build 5,

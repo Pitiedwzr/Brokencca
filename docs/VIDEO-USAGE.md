@@ -102,6 +102,22 @@ Build 5 iOS logs include `low_power`, `render_max_ms` and `drawable_wait_max_ms`
 (maxima since the video generation began) to distinguish power policy and rendering
 or drawable stalls. The Windows log alone cannot establish which cause dominates.
 
+The build-5 fixture retest showed nominal thermal status, Low Power Mode off,
+approximately 60 fps decode and approximately 30 fps presentation. Drawable
+acquisition waits reached 33.4 ms, compared with a 34.0 ms maximum render call.
+Build 6 uses a three-drawable Core Animation pool and a per-frame autorelease
+pool, with the existing two GPU submissions and one latest pending decoded frame.
+This addresses suspected drawable starvation; sustained 60 fps and lower latency
+still require a device retest. See Apple's
+[drawable lifecycle guidance](https://developer.apple.com/library/archive/documentation/3DDrawing/Conceptual/MTLBestPracticesGuide/Drawables.html).
+It also logs `render_count`, `render_mean_ms`, `drawable_wait_mean_ms`, `gpu_count`,
+`gpu_mean_ms` and `gpu_max_ms`. These counts, means and maxima cover the current
+generation; GPU timings are reported only for completed submissions with valid
+timestamps. For the next fixture run, use the same host and command with the
+build-6 IPA and save both logs. Check near-60 unique presentations and compare
+wait/GPU timings and photographed frame differences, including the first startup
+(the build-5 retest logged one presentation timeout before its successful retry).
+
 ## What to test and return
 
 1. Run `./Brokencca.VideoProbe.exe video-probe.h264` on the game PC. It must report

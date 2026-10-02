@@ -9,7 +9,7 @@ settings:
     CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF: YES
     GCC_WARN_64_TO_32_BIT_CONVERSION: YES
     MARKETING_VERSION: '0.2.0'
-    CURRENT_PROJECT_VERSION: '5'
+    CURRENT_PROJECT_VERSION: '6'
 targets:
   Brokencca:
     type: application

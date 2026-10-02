@@ -359,6 +359,27 @@ as errors. iOS diagnostics now also log Low Power Mode and maximum render/drawab
 wait times per generation. Xcode compilation and this UI/device retest remain
 pending through GitHub Actions.
 
+The user confirmed build 5's Full-size ring and mode button work on the iPad.
+The next fixture logs, `log/ios_video_fixture.log` and `log/video_fixture.log`,
+contain 50 host video summaries averaging 58.98 sent frames per summary and
+29.973 Hz display cadence (range 29.697–30.447 Hz). iOS receives/decodes roughly
+60 fps while presenting roughly 30 fps, with zero/one outstanding decode,
+`low_power=0` and nominal thermal status. Its drawable-wait maximum reaches
+33.412 ms and render-call maximum reaches 34.036 ms. The host also records one
+startup presentation-feedback timeout, followed by a successful generation 2
+at 7.5 Mbps. These observations point to drawable acquisition as a rendering
+bottleneck; they do not prove every frame waited 33 ms or establish GPU duration.
+
+Build 6 replaces the two-drawable pool with three drawables, retaining the two
+GPU submission limit, and adds a per-frame autorelease pool to promptly release
+drawable/command/render-pass ownership. It explicitly uses asynchronous
+presentation, rejects a generation retired during drawable acquisition, and
+reports generation-scoped mean render/wait and completed GPU timings. This
+addresses a plausible drawable lifecycle cause of the 30 Hz behavior. It has
+not been reproduced or performance-validated locally: Xcode compilation and
+the next iPad fixture run remain required. No host or encoder change is needed
+for this retest; compare both logs, startup recovery and photographed delay.
+
 The follow-up `log/video_fixture_new.log` confirms control-token negotiation now
 passes and the AMD hardware encoder starts at 1280x720. The next failure,
 `Value does not fall within the expected range`, was reproduced locally by

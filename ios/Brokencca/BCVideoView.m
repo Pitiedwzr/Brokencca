@@ -19,6 +19,8 @@
     uint32_t _replaced, _displayMilliHz;
     CFTimeInterval _lastTick;
     double _maxDrawableWaitMs, _maxRenderMs;
+    double _drawableWaitTotalMs, _renderTotalMs, _gpuTotalMs, _maxGpuMs;
+    uint32_t _renderCount, _gpuCount;
 }
 @property(nonatomic, strong) NSLock *guard;
 @property(nonatomic, strong) BCVideoGeometry *latestGeometry;
@@ -29,6 +31,7 @@
 @property(nonatomic, strong) CADisplayLink *displayLink;
 @property(nonatomic, strong) BCDisplayTarget *displayTarget;
 - (void)drawFrame:(CADisplayLink *)link;
+- (void)renderLatestFrame;
 @end
 
 @implementation BCDisplayTarget
@@ -45,7 +48,9 @@
         if (!_device) return self;
         CAMetalLayer *layer = (CAMetalLayer *)self.layer;
         layer.device = _device; layer.pixelFormat = MTLPixelFormatBGRA8Unorm; layer.framebufferOnly = YES;
-        layer.maximumDrawableCount = 2;
+        // Core Animation can still own the displayed drawable after GPU completion.
+        // Keep a third drawable available, while retaining the two-submission limit.
+        layer.maximumDrawableCount = 3; layer.presentsWithTransaction = NO;
         CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceITUR_709); layer.colorspace = space; CGColorSpaceRelease(space);
         _commandQueue = [_device newCommandQueue];
         NSString *source = @"#include <metal_stdlib>\nusing namespace metal;\n"
@@ -84,6 +89,8 @@
 - (void)activateGeneration:(uint64_t)generation {
     [self.guard lock]; _generation = generation; _latestFrame = 0; _replaced = 0;
     _maxDrawableWaitMs = _maxRenderMs = 0;
+    _drawableWaitTotalMs = _renderTotalMs = _gpuTotalMs = _maxGpuMs = 0;
+    _renderCount = _gpuCount = 0;
     if (_latest) { CVPixelBufferRelease(_latest); _latest = NULL; }
     if (_displayedBuffer) { CVPixelBufferRelease(_displayedBuffer); _displayedBuffer = NULL; }
     self.latestGeometry = nil; [self.guard unlock];
@@ -111,7 +118,10 @@
 - (void)clear { [self activateGeneration:0]; }
 - (NSDictionary *)statistics {
     [self.guard lock]; NSDictionary *result = @{@"replacedDecoded":@(_replaced),@"displayMilliHz":@(_displayMilliHz),
-        @"maxDrawableWaitMs":@(_maxDrawableWaitMs),@"maxRenderMs":@(_maxRenderMs)};
+        @"maxDrawableWaitMs":@(_maxDrawableWaitMs),@"maxRenderMs":@(_maxRenderMs),
+        @"renderCount":@(_renderCount),@"meanDrawableWaitMs":@(_renderCount ? _drawableWaitTotalMs/_renderCount : 0),
+        @"meanRenderMs":@(_renderCount ? _renderTotalMs/_renderCount : 0),
+        @"gpuCount":@(_gpuCount),@"meanGpuMs":@(_gpuCount ? _gpuTotalMs/_gpuCount : 0),@"maxGpuMs":@(_maxGpuMs)};
     [self.guard unlock]; return result;
 }
 - (void)drawFrame:(CADisplayLink *)link {
@@ -119,6 +129,11 @@
     if (_lastTick && link.timestamp > _lastTick) _displayMilliHz = (uint32_t)MIN(240000,round(1000.0/(link.timestamp-_lastTick)));
     _lastTick = link.timestamp;
     [self.guard unlock];
+    // Drain per-frame command buffers, pass descriptors and drawable references
+    // before the next display tick, instead of waiting for UIKit's outer pool.
+    @autoreleasepool { [self renderLatestFrame]; }
+}
+- (void)renderLatestFrame {
     if (!self.available || self.bounds.size.width <= 0 || self.bounds.size.height <= 0) return;
     CFTimeInterval renderStarted = CACurrentMediaTime();
     [self.guard lock];
@@ -138,8 +153,11 @@
     CFTimeInterval drawableStarted = CACurrentMediaTime();
     if (a == kCVReturnSuccess && b == kCVReturnSuccess) drawable = [(CAMetalLayer *)self.layer nextDrawable];
     double drawableWaitMs = (CACurrentMediaTime()-drawableStarted)*1000;
-    [self.guard lock]; _maxDrawableWaitMs = MAX(_maxDrawableWaitMs,drawableWaitMs); [self.guard unlock];
-    if (!drawable) {
+    [self.guard lock];
+    if (generation == _generation) _maxDrawableWaitMs = MAX(_maxDrawableWaitMs,drawableWaitMs);
+    BOOL current = generation == _generation;
+    [self.guard unlock];
+    if (!drawable || !current) {
         if (y) CFRelease(y); if (uv) CFRelease(uv); CVPixelBufferRelease(buffer);
         [self.guard lock]; _inflight--; [self.guard unlock]; return;
     }
@@ -173,10 +191,24 @@
     }];
     [commands addCompletedHandler:^(id<MTLCommandBuffer> finished) {
         CFRelease(y); CFRelease(uv); CVPixelBufferRelease(buffer);
-        BCVideoView *s = weakSelf; [s.guard lock]; if (s) s->_inflight--; [s.guard unlock];
+        BCVideoView *s = weakSelf; [s.guard lock];
+        if (s) {
+            s->_inflight--;
+            if (generation == s->_generation && finished.GPUEndTime > finished.GPUStartTime) {
+                double gpuMs = (finished.GPUEndTime-finished.GPUStartTime)*1000;
+                s->_gpuCount++; s->_gpuTotalMs += gpuMs; s->_maxGpuMs = MAX(s->_maxGpuMs,gpuMs);
+            }
+        }
+        [s.guard unlock];
     }];
     [commands presentDrawable:drawable]; [commands commit];
-    [self.guard lock]; _maxRenderMs = MAX(_maxRenderMs,(CACurrentMediaTime()-renderStarted)*1000); [self.guard unlock];
+    double renderMs = (CACurrentMediaTime()-renderStarted)*1000;
+    [self.guard lock];
+    if (generation == _generation) {
+        _renderCount++; _drawableWaitTotalMs += drawableWaitMs; _renderTotalMs += renderMs;
+        _maxRenderMs = MAX(_maxRenderMs,renderMs);
+    }
+    [self.guard unlock];
 }
 - (void)dealloc {
     [self.displayLink invalidate]; if (_latest) CVPixelBufferRelease(_latest); if (_displayedBuffer) CVPixelBufferRelease(_displayedBuffer); if (_cache) CFRelease(_cache);
