@@ -11,3 +11,5 @@ ios/build/
 *.p12
 *.mobileprovision
 log/
+assets/brokenithm.png
+assets/cabient.jpg
