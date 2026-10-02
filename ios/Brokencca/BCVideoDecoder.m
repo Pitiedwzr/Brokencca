@@ -80,8 +80,8 @@ static void BCDecoded(void *refcon, void *frameRefcon, OSStatus status, VTDecode
         CMBlockBufferRef block=NULL; CMSampleBufferRef sample=NULL;
         OSStatus status=CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault,NULL,accessUnit.length,kCFAllocatorDefault,NULL,0,accessUnit.length,0,&block);
         if (!status) status=CMBlockBufferReplaceDataBytes(accessUnit.bytes,block,0,accessUnit.length);
-        CMSampleTimingInfo timing={CMTimeMake(1,60),CMTimeMake((int64_t)captured,1000000),kCMTimeInvalid}; size_t size=accessUnit.length;
-        if (!status) status=CMSampleBufferCreateReady(kCFAllocatorDefault,block,self->_format,1,1,&timing,1,&size,&sample);
+        CMSampleTimingInfo sampleTiming={CMTimeMake(1,60),CMTimeMake((int64_t)captured,1000000),kCMTimeInvalid}; size_t size=accessUnit.length;
+        if (!status) status=CMSampleBufferCreateReady(kCFAllocatorDefault,block,self->_format,1,1,&sampleTiming,1,&size,&sample);
         if (status) { [timing dropped:@"decode-unavailable"]; if (block) CFRelease(block); if (sample) CFRelease(sample); if (self.failed) self.failed(@"Could not create decode sample",generation); return; }
         BCDecodeContext *context=[BCDecodeContext new]; context.frame=frame; context.generation=generation; context.geometry=self.geometry; context.timing=timing;
         void *retained=(__bridge_retained void *)context;
