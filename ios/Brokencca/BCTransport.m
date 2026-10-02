@@ -145,7 +145,7 @@ static double BCPercentile(NSArray<NSNumber *> *values, double fraction) {
     self.ready = YES;
     [self send:BCHello payload:hello];
     // Both protocol versions start released, even if fingers touched the waiting screen.
-    self.bitmap = [NSData dataWithLength:30];
+    self.bitmap = [NSMutableData dataWithLength:30];
     [self send:BCTouch payload:self.bitmap];
     [self notify:@"Connected · wired input" connected:YES];
     self.timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, self.queue);
