@@ -13,9 +13,11 @@ public sealed class GpuDevice : IDisposable
     public ID3D11Device Device { get; }
     public ID3D11DeviceContext Context { get; }
     public string Adapter { get; }
+    private readonly bool videoSupport;
     private bool disposed;
     public GpuDevice(bool videoSupport = false)
     {
+        this.videoSupport = videoSupport;
         var flags = DeviceCreationFlags.BgraSupport | (videoSupport ? DeviceCreationFlags.VideoSupport : 0);
         D3D11CreateDevice(null, DriverType.Hardware, flags, [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0], out ID3D11Device device, out ID3D11DeviceContext context).CheckError();
         Device = device!; Context = context!;
@@ -32,7 +34,10 @@ public sealed class GpuDevice : IDisposable
         Width = (uint)width, Height = (uint)height, MipLevels = 1, ArraySize = 1,
         Format = Format.B8G8R8A8_UNorm, SampleDescription = new(1, 0),
         Usage = staging ? ResourceUsage.Staging : ResourceUsage.Default,
-        BindFlags = staging ? BindFlags.None : BindFlags.ShaderResource,
+        // ShaderResource alone is not a legal video-processor input binding.
+        // Streaming leases are also render targets so the same owned BGRA surface
+        // can feed the GPU NV12 converter without an additional copy or CPU readback.
+        BindFlags = staging ? BindFlags.None : BindFlags.ShaderResource | (videoSupport ? BindFlags.RenderTarget : BindFlags.None),
         CPUAccessFlags = staging ? CpuAccessFlags.Read : CpuAccessFlags.None
     });
     internal bool IsComplete(ID3D11Query query)

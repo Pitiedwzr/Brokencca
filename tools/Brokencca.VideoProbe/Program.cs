@@ -22,6 +22,8 @@ try
         BindFlags = BindFlags.RenderTarget | BindFlags.ShaderResource
     });
     using var view = gpu.Device.CreateRenderTargetView(texture);
+    // Exercise the same owned-texture allocator and GPU copy used by WGC capture.
+    using var captured = gpu.CreateTexture(720, 1280);
     using var encoder = new HardwareEncoder(gpu, 720, 1280, 10_000_000);
     var parser = new H264Stream(); var pending = new Dictionary<long, long>();
     var clock = Stopwatch.StartNew(); int submitted = 0, received = 0, idrs = 0;
@@ -44,10 +46,14 @@ try
         }
         if (submitted < 180 && pending.Count < 3 && clock.Elapsed.TotalSeconds >= submitted / 60.0)
         {
-            lock (gpu.Gate) gpu.Context.ClearRenderTargetView(view, new Color4((submitted % 60) / 59f, .25f, .75f, 1));
+            lock (gpu.Gate)
+            {
+                gpu.Context.ClearRenderTargetView(view, new Color4((submitted % 60) / 59f, .25f, .75f, 1));
+                gpu.Context.CopyResource(captured, texture);
+            }
             if (submitted == 90) encoder.ForceIdr();
             long pts = 10_000_000L + submitted * 10_000_000L / 60;
-            if (encoder.SubmitTexture(texture, new(0, 0, 720, 1280), pts, new(0, 0, 720, 1280)))
+            if (encoder.SubmitTexture(captured, new(0, 0, 720, 1280), pts, new(0, 0, 720, 1280)))
             { pending.Add(pts, Stopwatch.GetTimestamp()); submitted++; }
         }
         Thread.Sleep(1);

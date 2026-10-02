@@ -28,20 +28,29 @@ public sealed class HardwareEncoder : IDisposable
         int hr;
         lock (gpu.Gate) hr = SubmitNative(handle, texture.NativePointer, crop.X, crop.Y, crop.Width,
             crop.Height, time100ns, content.X, content.Y, content.Width, content.Height);
-        Marshal.ThrowExceptionForHR(hr); return hr == 0;
+        if (hr < 0)
+        {
+            var desc = texture.Description;
+            CheckNative(hr, $"GPU conversion/submission of {desc.Width}x{desc.Height} {desc.Format} texture (bind={desc.BindFlags}, crop={crop}, content={content})");
+        }
+        return hr == 0;
     }
     public (byte[] Bytes, long Time100ns)? Poll()
     {
         int hr = PollNative(handle, output, (uint)output.Length, out uint length, out long pts);
-        Marshal.ThrowExceptionForHR(hr);
+        CheckNative(hr, "Hardware encoder input/output processing");
         return hr == 0 ? (output.AsSpan(0, checked((int)length)).ToArray(), pts) : null;
     }
-    public void ForceIdr() => Marshal.ThrowExceptionForHR(ForceNative(handle));
+    public void ForceIdr() => CheckNative(ForceNative(handle), "Hardware encoder IDR request");
     public byte[] Headers()
     {
         byte[] bytes = new byte[4096];
         int hr = HeadersNative(handle, bytes, (uint)bytes.Length, out uint length);
-        Marshal.ThrowExceptionForHR(hr); return bytes.AsSpan(0, checked((int)length)).ToArray();
+        CheckNative(hr, "Reading hardware encoder parameter sets"); return bytes.AsSpan(0, checked((int)length)).ToArray();
+    }
+    private static void CheckNative(int hr, string operation)
+    {
+        if (hr < 0) throw new IOException($"{operation} failed (HRESULT 0x{hr:X8}).", Marshal.GetExceptionForHR(hr));
     }
     public void Dispose() { if (handle != 0) { Destroy(handle); handle = 0; } }
     private const string Dll = "brokencca-video.dll";
