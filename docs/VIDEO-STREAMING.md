@@ -196,7 +196,7 @@ smaller negotiated receiver cap. These limits are independent of control v1.
 
 | Type | Direction | Payload and rule |
 | --- | --- | --- |
-| HELLO = 1 | Windows -> iOS | `sessionToken`: 32 hex characters; `videoVersion`: 1 |
+| HELLO = 1 | Windows -> iOS | `sessionToken`: 32 hex characters; `videoVersion`: 1; optional Boolean `frameTiming` enables per-frame diagnostic logs on build-7+ IPA |
 | HELLO_ACK = 2 | iOS -> Windows | `maxWidth`, `maxHeight` (1..1920), `maxPixels` (1..2073600), `maxFps` (1..60), `maxAuBytes` (65536..2097152), `profiles` (array of 1..2 values: `main`, `baseline`), `maxLevel` (H.264 level_idc, 1..42). Advertised bounds must have been probed; actual CONFIG still requires decoder creation |
 | CONFIG = 3 | Windows -> iOS | Exact schema below; starts the nonzero generation |
 | READY = 4 | iOS -> Windows | `hardwareVerified`: Boolean; true on iOS 17+ after requiring/verifying hardware, false on iOS 15–16 after checking H.264 hardware capability. Generation matches CONFIG; decoder/renderer configuration must succeed |
@@ -262,7 +262,7 @@ depths; normal operation should have close to zero waiting frames.
 | Encoded send | At most two AUs including active send, combined <=4 MiB; oldest enqueue age <=50 ms | Cancel/close video and restart generation; never remove one reference AU and keep its dependents |
 | One socket write | <=100 ms to write a complete framed message | Timeout closes socket even after a partial write; do not continue framing on it |
 | iOS receive/decode | One partial AU plus at most three complete outstanding AUs including VT submissions, <=8 MiB compressed total | Close/recover at IDR if full or complete AU waits >50 ms; no arbitrary compressed-frame dropping |
-| Decoded/render | One latest pending pixel buffer, one retained displayed buffer for rotation, plus at most two GPU submissions | Replace old decoded pending frame, skip drawing if GPU/drawable unavailable; release GPU ownership after completion |
+| Decoded/render | One latest pending pixel buffer, one retained displayed buffer for rotation, at most one drawable awaiting presentation and two GPU submissions | Coalesce immediate render requests; replace old pending frame, skip drawing if capacity/drawable unavailable; release GPU and presentation ownership separately |
 | Feedback accounting | <=32 frame timing entries or 500 ms, whichever first | Missing correlation is reported; 250 ms without forward presentation progress during moving-source streaming triggers recovery |
 
 If a selected encoder requires more buffering than these defaults, stop the
@@ -347,9 +347,15 @@ Keep the pixel buffer and plane textures alive through command-buffer completion
 do not convert frames via UIImage, CGImage, CPU RGBA, or per-frame texture uploads.
 See [Core Video's Metal texture cache](https://developer.apple.com/documentation/corevideo/cvmetaltexturecache-q3j).
 
-Use one CADisplayLink at preferred 60 Hz, in common run-loop modes, to present
-the newest ready frame; do not add a second independent render timer. Reuse the
-last drawable content if no new frame exists and count it as a repeat. Track
+Use one CADisplayLink at preferred 60 Hz, in common run-loop modes, for fallback
+render requests and cadence measurement; do not add a second independent timer.
+As of IPA build 7, decode callbacks immediately request a coalesced main-thread
+render of the newest ready buffer, removing the wait for the next display tick.
+Allow only one unpresented drawable, freeing its slot at actual presentation
+(or GPU failure), independently of the two GPU submission slots. Callback order
+is unspecified, so each submission owns a ticket and releases each slot once.
+Keep counts across retired generations until their callbacks release ownership.
+Reuse the last drawable content if no new frame exists and count it as a repeat. Track
 scheduled draw, GPU completion, and drawable presentation separately where
 available; none alone proves glass latency. Low Power Mode, thermal policy, and
 device limits can change the actual cadence despite the requested
@@ -365,6 +371,16 @@ Presentation is asynchronous (`presentsWithTransaction=NO`). Generation-scoped
 render/wait means and GPU completion timings complement display cadence and
 presentation counts; changing pool size alone does not establish lower glass
 latency or sustained 60 fps.
+
+`--video-diagnostics` adds optional Boolean `frameTiming` to HELLO and enables
+generation/frame-correlated host and iOS timestamp logs. The default HELLO stays
+unchanged; detailed tracing requires a matching build-7+ IPA. All iOS timestamps
+and clock replies use Core Animation's host clock, matching Metal GPU/presentation
+timestamps. `Brokencca.VideoTiming` joins the logs and reports stage durations
+and capture-to-presentation estimates with clock uncertainty. It handles missing
+timestamps, replaced frames, retired generations, static redraws and startup
+separately; only actual, valid steady presentations contribute to summaries.
+See [VIDEO-USAGE.md](VIDEO-USAGE.md) for the command and timing boundaries.
 
 Implement one immutable geometry snapshot shared by video and touch rendering:
 

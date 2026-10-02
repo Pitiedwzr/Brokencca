@@ -64,6 +64,11 @@ internal static class VideoProtocolTests
         await RejectInvalid(new MemoryStream(brokenNal));
         byte[] json = Encoding.UTF8.GetBytes("{\"sessionToken\":\"00000000000000000000000000000000\",\"videoVersion\":1}");
         var hello = new VideoMessage(VideoMessageType.Hello, 0, 0, 0, 0, json);
+        string timingHello = Encoding.UTF8.GetString(json)[..^1] + ",\"frameTiming\":true}";
+        VideoProtocol.Encode(hello with { Payload = Encoding.UTF8.GetBytes(timingHello) });
+        VideoProtocol.Encode(hello with { Payload = Encoding.UTF8.GetBytes(timingHello.Replace("true", "false")) });
+        foreach (string badTiming in new[] { "1", "null", "\"true\"", "[]" })
+            Reject(() => VideoProtocol.Encode(hello with { Payload = Encoding.UTF8.GetBytes(timingHello.Replace("true", badTiming)) }));
         Assert((await VideoProtocol.ReadAsync(new OneByteStream(VideoProtocol.Encode(hello)), default)).Type == VideoMessageType.Hello);
         byte[] duplicateJson = Encoding.UTF8.GetBytes("{\"videoVersion\":1,\"videoVersion\":1}");
         Reject(() => VideoProtocol.Encode(hello with { Payload = duplicateJson }));

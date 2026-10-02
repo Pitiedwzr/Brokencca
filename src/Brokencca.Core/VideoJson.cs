@@ -11,7 +11,12 @@ public static class VideoJson
         switch (type)
         {
             case VideoMessageType.Hello:
-                Fields(root, "sessionToken", "videoVersion");
+                bool timing = root.TryGetProperty("frameTiming", out JsonElement timingValue);
+                if (timing) {
+                    Fields(root, "sessionToken", "videoVersion", "frameTiming");
+                    if (timingValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) Bad("Invalid frame timing option.");
+                }
+                else Fields(root, "sessionToken", "videoVersion");
                 string token = String(root, "sessionToken", 32);
                 if (token.Length != 32 || !token.All(Uri.IsHexDigit)) Bad("Invalid session token.");
                 Equal(root, "videoVersion", 1);

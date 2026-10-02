@@ -17,7 +17,8 @@ public static class VideoStreamer
 {
     private sealed class InputOverloadException() : IOException("Video stopped because input queue age/depth exceeded its protection budget.");
     private static long generations, frameIds;
-    private sealed record Frame(ulong Id, ulong CaptureUs, byte[] Bytes, bool Idr, byte[] Config, long Enqueued);
+    private sealed record Frame(ulong Id, ulong CaptureUs, byte[] Bytes, bool Idr, byte[] Config, long Enqueued,
+        long AcquiredUs, long SubmittedUs, long EncodedUs);
     private sealed class PipelineState { public volatile string Status = "source-idle"; public long LastAdmission; }
     public static async Task RunAsync(VideoOptions options, ReadOnlyMemory<byte> sessionToken, CancellationToken token)
     {
@@ -57,6 +58,17 @@ public static class VideoStreamer
             deadline.CancelAfter(100);
             await VideoProtocol.WriteAsync(socket, new(type, outgoing++, generation, id, capture, payload, idr), deadline.Token);
         }
+        async Task SendFrame(Frame frame, bool bootstrap)
+        {
+            long startedUs = MonotonicUs();
+            await Send(VideoMessageType.AccessUnit, frame.Bytes, frame.Id, frame.CaptureUs, frame.Idr);
+            long completedUs = MonotonicUs();
+            if (options.Diagnostics) Console.WriteLine(JsonSerializer.Serialize(new {
+                kind = "video_frame_host", generation, frame_id = frame.Id, bootstrap,
+                capture_us = frame.CaptureUs, acquired_us = frame.AcquiredUs, submitted_us = frame.SubmittedUs,
+                encoded_us = frame.EncodedUs, send_started_us = startedUs, send_completed_us = completedUs
+            }));
+        }
         async Task<VideoMessage> Receive(int timeout)
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(child.Token); deadline.CancelAfter(timeout);
@@ -71,7 +83,9 @@ public static class VideoStreamer
             if (message.Type == VideoMessageType.Error) throw new IOException("iOS video error: " + System.Text.Encoding.UTF8.GetString(message.Payload));
             return message;
         }
-        await Send(VideoMessageType.Hello, JsonSerializer.SerializeToUtf8Bytes(new { sessionToken = Convert.ToHexString(sessionToken.Span), videoVersion = 1 }));
+        var helloBody = new Dictionary<string, object> { ["sessionToken"] = Convert.ToHexString(sessionToken.Span), ["videoVersion"] = 1 };
+        if (options.Diagnostics) helloBody["frameTiming"] = true;
+        await Send(VideoMessageType.Hello, JsonSerializer.SerializeToUtf8Bytes(helloBody));
         VideoMessage hello = await Receive(3000);
         if (hello.Type != VideoMessageType.HelloAck || hello.Generation != 0) throw new InvalidDataException("Expected video HELLO_ACK.");
         using JsonDocument caps = JsonDocument.Parse(hello.Payload);
@@ -129,9 +143,13 @@ public static class VideoStreamer
                             long t4 = MonotonicUs();
                             if (t1 != Interlocked.Read(ref pingUs) || t4 < t1 || t3 < t2 || t3 - t2 > t4 - t1) throw new InvalidDataException("Invalid clock reply.");
                             double uncertainty = ((double)(t4 - t1) - (t3 - t2)) / 2;
+                            double offset = ((double)t2 - t1 + ((double)t3 - t4)) / 2;
+                            if (options.Diagnostics) Console.WriteLine(JsonSerializer.Serialize(new {
+                                kind = "video_clock", generation, sampled_host_us = t4, offset_us = offset, uncertainty_us = uncertainty
+                            }));
                             if (uncertainty < Volatile.Read(ref clockUncertaintyUs))
                             {
-                                Volatile.Write(ref clockOffsetUs, ((double)t2 - t1 + ((double)t3 - t4)) / 2);
+                                Volatile.Write(ref clockOffsetUs, offset);
                                 Volatile.Write(ref clockUncertaintyUs, uncertainty);
                             }
                             continue;
@@ -156,7 +174,7 @@ public static class VideoStreamer
             // Its original capture timestamp remains intact for honest latency diagnostics.
                 if (bootstrap.Bytes.Length > maxAu) throw new IOException("Bootstrap AU exceeds receiver limit.");
                 Interlocked.Exchange(ref sentId, (long)bootstrap.Id);
-                await Send(VideoMessageType.AccessUnit, bootstrap.Bytes, bootstrap.Id, bootstrap.CaptureUs, bootstrap.Idr);
+                await SendFrame(bootstrap, true);
                 initialIdr = true;
             ready.Set();
             Console.WriteLine($"Video active: {width}x{height} @ 60 fps, {options.Bitrate / 1_000_000.0:F1} Mbps, generation {generation}.");
@@ -178,7 +196,7 @@ public static class VideoStreamer
                     if (!initialIdr && !next.Idr) throw new InvalidDataException("First video frame is not IDR.");
                     initialIdr = true;
                     Interlocked.Exchange(ref sentId, (long)next.Id);
-                    await Send(VideoMessageType.AccessUnit, next.Bytes, next.Id, next.CaptureUs, next.Idr);
+                    await SendFrame(next, false);
                     sent++; bytes += next.Bytes.Length;
                 }
                 else await Send(VideoMessageType.Status, JsonSerializer.SerializeToUtf8Bytes(new { state = state.Status, reason = state.Status == "paused" ? "Source minimized or unavailable" : "Waiting for source update" }));
@@ -231,7 +249,7 @@ public static class VideoStreamer
             using var capture = new WgcCaptureSession(gpu, options.Source, new(options.Profile.Crop));
             HardwareEncoder? encoder = null;
             var h264 = new H264Stream();
-            var pending = new Dictionary<long, (ulong Id, ulong CaptureUs, long Submitted)>();
+            var pending = new Dictionary<long, (ulong Id, ulong CaptureUs, long Submitted, long AcquiredUs, long SubmittedUs)>();
             long geometry = 0; int width = 0, height = 0, sourceWidth = 0, sourceHeight = 0;
             var cadence = new VideoFrameCadence();
             PixelRect content = default; byte[]? configuration = null; bool bootstrapSent = false;
@@ -248,6 +266,7 @@ public static class VideoStreamer
                         var encoded = encoder.Poll();
                         if (encoded is not null)
                         {
+                            long encodedUs = MonotonicUs();
                             if (!pending.Remove(encoded.Value.Time100ns, out var info)) throw new IOException("Unmatched encoder output timestamp.");
                             H264AccessUnit au = h264.Normalize(encoded.Value.Bytes);
                             // Some MFT media types retain a provisional SPS whose VUI differs from
@@ -256,7 +275,8 @@ public static class VideoStreamer
                             H264Format format = h264.Format ?? throw new IOException("Encoder did not supply SPS.");
                             if (h264.Pps is null || format.Width != width || format.Height != height) throw new IOException("Encoder codec configuration mismatches dimensions.");
                             configuration ??= Config(options, width, height, sourceWidth, sourceHeight, content, format, h264.Sps!, h264.Pps);
-                            if (!output.TryWrite(new(info.Id, info.CaptureUs, au.Bytes, au.IsIdr, configuration, Stopwatch.GetTimestamp())))
+                            if (!output.TryWrite(new(info.Id, info.CaptureUs, au.Bytes, au.IsIdr, configuration, Stopwatch.GetTimestamp(),
+                                info.AcquiredUs, info.SubmittedUs, encodedUs)))
                                 throw new IOException("Encoded video queue overflow; start fresh at IDR.");
                             if (!bootstrapSent) { bootstrapSent = true; ready.Wait(token); }
                         }
@@ -266,6 +286,7 @@ public static class VideoStreamer
                     using var frame = capture.TryAcquire();
                     if (frame is null) { Thread.Sleep(1); continue; }
                     var f = frame.Info;
+                    long acquiredUs = MonotonicUs();
                     if (!f.GeometryResolved) throw new IOException("Capture geometry unresolved; use the preview to validate the window.");
                     options.Profile.ValidateFor(f.Client.Width, f.Client.Height);
                     if (encoder is null)
@@ -285,10 +306,11 @@ public static class VideoStreamer
                         while (!token.IsCancellationRequested && Stopwatch.GetElapsedTime(startup).TotalMilliseconds < 100)
                         {
                             encoder.Poll();
+                            long submittedUs = MonotonicUs();
                             if (encoder.Submit(frame, f.Timestamp100ns, content))
                             {
                                 pending.Add(f.Timestamp100ns, ((ulong)Interlocked.Increment(ref frameIds),
-                                    (ulong)(f.Timestamp100ns / 10), Stopwatch.GetTimestamp()));
+                                    (ulong)(f.Timestamp100ns / 10), Stopwatch.GetTimestamp(), acquiredUs, submittedUs));
                                 Interlocked.Exchange(ref state.LastAdmission, Stopwatch.GetTimestamp());
                                 cadence.Admit(f.Timestamp100ns);
                                 break;
@@ -304,10 +326,11 @@ public static class VideoStreamer
                     if (rawAgeMs < -20) throw new IOException("Capture and host monotonic epochs do not agree.");
                     if (rawAgeMs > 33) continue;
                     if (!cadence.Admit(f.Timestamp100ns)) continue;
+                    long encoderSubmittedUs = MonotonicUs();
                     if (encoder.Submit(frame, f.Timestamp100ns, content))
                     {
                         ulong id = (ulong)Interlocked.Increment(ref frameIds);
-                        pending.Add(f.Timestamp100ns, (id, (ulong)(f.Timestamp100ns / 10), Stopwatch.GetTimestamp()));
+                        pending.Add(f.Timestamp100ns, (id, (ulong)(f.Timestamp100ns / 10), Stopwatch.GetTimestamp(), acquiredUs, encoderSubmittedUs));
                         Interlocked.Exchange(ref state.LastAdmission, Stopwatch.GetTimestamp());
                         state.Status = "running";
                     }

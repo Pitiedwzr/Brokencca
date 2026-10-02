@@ -4,6 +4,7 @@
 #import <QuartzCore/CADisplayLink.h>
 #import <math.h>
 #import <simd/simd.h>
+#import "BCVideoSchedule.h"
 
 @interface BCDisplayTarget : NSObject
 @property(nonatomic, weak) BCVideoView *view;
@@ -14,8 +15,8 @@
     CVMetalTextureCacheRef _cache;
     CVPixelBufferRef _latest;
     CVPixelBufferRef _displayedBuffer;
-    uint64_t _latestFrame, _latestGeneration, _generation;
-    NSUInteger _inflight;
+    uint64_t _latestFrame, _latestGeneration, _generation, _revision;
+    BCVideoSchedule _schedule;
     uint32_t _replaced, _displayMilliHz;
     CFTimeInterval _lastTick;
     double _maxDrawableWaitMs, _maxRenderMs;
@@ -24,6 +25,8 @@
 }
 @property(nonatomic, strong) NSLock *guard;
 @property(nonatomic, strong) BCVideoGeometry *latestGeometry;
+@property(nonatomic, strong) BCVideoTiming *latestTiming;
+@property(nonatomic, strong) BCVideoTiming *displayedTiming;
 @property(nonatomic, strong) NSDictionary *displayedConfiguration;
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) id<MTLCommandQueue> commandQueue;
@@ -32,6 +35,7 @@
 @property(nonatomic, strong) BCDisplayTarget *displayTarget;
 - (void)drawFrame:(CADisplayLink *)link;
 - (void)renderLatestFrame;
+- (void)requestRender;
 @end
 
 @implementation BCDisplayTarget
@@ -82,28 +86,41 @@
     // Re-render a static source after rotation; changing only layer bounds can stretch
     // the previous drawable and disagree with the newly computed touch transform.
     [self.guard lock];
-    if (!_latest && _displayedBuffer && _latestGeneration == _generation && _generation)
+    if (!_latest && _displayedBuffer && _latestGeneration == _generation && _generation) {
         _latest = CVPixelBufferRetain(_displayedBuffer);
+        self.latestTiming=[self.displayedTiming renderCopy];
+    }
     [self.guard unlock];
+    [self requestRender];
 }
 - (void)activateGeneration:(uint64_t)generation {
-    [self.guard lock]; _generation = generation; _latestFrame = 0; _replaced = 0;
+    BCVideoTiming *discarded;
+    [self.guard lock]; _generation = generation; _revision++; _latestFrame = 0; _replaced = 0;
     _maxDrawableWaitMs = _maxRenderMs = 0;
     _drawableWaitTotalMs = _renderTotalMs = _gpuTotalMs = _maxGpuMs = 0;
     _renderCount = _gpuCount = 0;
+    discarded=_latest ? self.latestTiming : nil;
     if (_latest) { CVPixelBufferRelease(_latest); _latest = NULL; }
     if (_displayedBuffer) { CVPixelBufferRelease(_displayedBuffer); _displayedBuffer = NULL; }
-    self.latestGeometry = nil; [self.guard unlock];
+    self.latestGeometry = nil; self.latestTiming=nil; self.displayedTiming=nil; [self.guard unlock];
+    [discarded dropped:@"generation-retired"];
 }
-- (void)enqueueBuffer:(CVPixelBufferRef)buffer frame:(uint64_t)frame generation:(uint64_t)generation geometry:(BCVideoGeometry *)geometry {
+- (void)enqueueBuffer:(CVPixelBufferRef)buffer frame:(uint64_t)frame generation:(uint64_t)generation geometry:(BCVideoGeometry *)geometry timing:(BCVideoTiming *)timing {
+    BCVideoTiming *discarded=nil;
     [self.guard lock];
     if (generation == _generation && generation != 0 && frame > _latestFrame) {
-        if (_latest) { CVPixelBufferRelease(_latest); if (_replaced < UINT32_MAX) _replaced++; }
+        if (_latest) { discarded=self.latestTiming; CVPixelBufferRelease(_latest); if (_replaced < UINT32_MAX) _replaced++; }
         _latest = CVPixelBufferRetain(buffer); _latestFrame = frame; _latestGeneration = generation; self.latestGeometry = geometry;
+        self.latestTiming=timing;
     }
     [self.guard unlock];
+    [self requestRender];
+    [discarded dropped:@"replaced"];
 }
-- (void)setPaused:(BOOL)paused { dispatch_async(dispatch_get_main_queue(), ^{ self.displayLink.paused = paused; }); }
+- (void)setPaused:(BOOL)paused {
+    [self.guard lock]; _schedule.paused=paused; [self.guard unlock];
+    dispatch_async(dispatch_get_main_queue(), ^{ self.displayLink.paused = paused; [self requestRender]; });
+}
 - (void)setZoomToPlayfield:(BOOL)zoom {
     if (_zoomToPlayfield == zoom) return;
     _zoomToPlayfield = zoom;
@@ -111,11 +128,18 @@
     // If video is disconnected, keep the frozen image and its mapping aligned.
     self.displayedConfiguration = nil;
     [self.guard lock];
-    if (!_latest && _displayedBuffer && _latestGeneration == _generation && _generation)
+    if (!_latest && _displayedBuffer && _latestGeneration == _generation && _generation) {
         _latest = CVPixelBufferRetain(_displayedBuffer);
+        self.latestTiming=[self.displayedTiming renderCopy];
+    }
     [self.guard unlock];
+    [self requestRender];
 }
 - (void)clear { [self activateGeneration:0]; }
+- (BOOL)isGenerationActive:(uint64_t)generation revision:(uint64_t)revision {
+    [self.guard lock]; BOOL current=generation && generation==_generation && revision==_revision;
+    [self.guard unlock]; return current;
+}
 - (NSDictionary *)statistics {
     [self.guard lock]; NSDictionary *result = @{@"replacedDecoded":@(_replaced),@"displayMilliHz":@(_displayMilliHz),
         @"maxDrawableWaitMs":@(_maxDrawableWaitMs),@"maxRenderMs":@(_maxRenderMs),
@@ -129,20 +153,32 @@
     if (_lastTick && link.timestamp > _lastTick) _displayMilliHz = (uint32_t)MIN(240000,round(1000.0/(link.timestamp-_lastTick)));
     _lastTick = link.timestamp;
     [self.guard unlock];
-    // Drain per-frame command buffers, pass descriptors and drawable references
-    // before the next display tick, instead of waiting for UIKit's outer pool.
-    @autoreleasepool { [self renderLatestFrame]; }
+    // Decode/presentation callbacks request rendering immediately. The display
+    // link supplies a fallback and measures cadence, without gating new frames.
+    [self requestRender];
+}
+- (void)requestRender {
+    [self.guard lock];
+    BOOL requested=BCVideoRequestRender(&_schedule,_latest && _generation);
+    [self.guard unlock];
+    if (!requested) return;
+    __weak BCVideoView *weakSelf=self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @autoreleasepool { [weakSelf renderLatestFrame]; }
+    });
 }
 - (void)renderLatestFrame {
-    if (!self.available || self.bounds.size.width <= 0 || self.bounds.size.height <= 0) return;
+    BOOL drawableBounds=self.available && self.bounds.size.width>0 && self.bounds.size.height>0;
     CFTimeInterval renderStarted = CACurrentMediaTime();
     [self.guard lock];
-    if (!_latest || _inflight >= 2) { [self.guard unlock]; return; }
+    if (!BCVideoBeginRender(&_schedule,drawableBounds && _latest && _generation)) { [self.guard unlock]; return; }
+    __block BCVideoRenderTicket ticket={0};
     CVPixelBufferRef buffer = _latest; _latest = NULL;
     if (_displayedBuffer) CVPixelBufferRelease(_displayedBuffer);
     _displayedBuffer = CVPixelBufferRetain(buffer);
-    uint64_t frame = _latestFrame, generation = _latestGeneration; BCVideoGeometry *geometry = self.latestGeometry;
-    _inflight++; [self.guard unlock];
+    uint64_t frame = _latestFrame, generation = _latestGeneration, revision = _revision; BCVideoGeometry *geometry = self.latestGeometry;
+    BCVideoTiming *timing=[self.latestTiming renderCopy]; timing.renderStartedUs=BCVideoNowUs(); self.displayedTiming=timing;
+    [self.guard unlock];
     geometry = [[BCVideoGeometry alloc] initWithConfiguration:geometry.configuration zoomToPlayfield:self.zoomToPlayfield];
     CVMetalTextureRef y = NULL, uv = NULL;
     CVReturn a = CVMetalTextureCacheCreateTextureFromImage(kCFAllocatorDefault,_cache,buffer,NULL,MTLPixelFormatR8Unorm,
@@ -154,15 +190,19 @@
     if (a == kCVReturnSuccess && b == kCVReturnSuccess) drawable = [(CAMetalLayer *)self.layer nextDrawable];
     double drawableWaitMs = (CACurrentMediaTime()-drawableStarted)*1000;
     [self.guard lock];
-    if (generation == _generation) _maxDrawableWaitMs = MAX(_maxDrawableWaitMs,drawableWaitMs);
-    BOOL current = generation == _generation;
+    BOOL current = generation == _generation && revision == _revision;
+    if (current) _maxDrawableWaitMs = MAX(_maxDrawableWaitMs,drawableWaitMs);
     [self.guard unlock];
     if (!drawable || !current) {
+        [timing dropped:current ? @"drawable-unavailable" : @"generation-retired"];
         if (y) CFRelease(y); if (uv) CFRelease(uv); CVPixelBufferRelease(buffer);
-        [self.guard lock]; _inflight--; [self.guard unlock]; return;
+        [self.guard lock]; BCVideoGPUFinished(&_schedule,&ticket,true); [self.guard unlock]; return;
     }
     NSMutableDictionary *mapping = [[geometry.configuration dictionaryWithValuesForKeys:@[@"codedWidth",@"codedHeight",@"sourceWidth",@"sourceHeight",@"crop",@"contentRect",@"circle"]] mutableCopy];
     mapping[@"zoomToPlayfield"] = @(self.zoomToPlayfield);
+    // Control reconnects can reuse a generation number and identical calibration.
+    // Republish geometry then, and reject presentation feedback from the old session.
+    mapping[@"rendererRevision"] = @(revision);
     if (![self.displayedConfiguration isEqual:mapping]) {
         self.displayedConfiguration = mapping;
         if (self.geometryChanged) self.geometryChanged(geometry);
@@ -172,6 +212,10 @@
     pass.colorAttachments[0].storeAction = MTLStoreActionStore; pass.colorAttachments[0].clearColor = MTLClearColorMake(0,0,0,1);
     id<MTLCommandBuffer> commands = [self.commandQueue commandBuffer];
     id<MTLRenderCommandEncoder> encoder = [commands renderCommandEncoderWithDescriptor:pass];
+    if (!commands || !encoder) {
+        [timing dropped:@"render-unavailable"]; CFRelease(y); CFRelease(uv); CVPixelBufferRelease(buffer);
+        [self.guard lock]; BCVideoGPUFinished(&_schedule,&ticket,true); [self.guard unlock]; return;
+    }
     [encoder setRenderPipelineState:self.pipeline];
     CGRect fit = [geometry codedRectInBounds:self.bounds];
     // Crop in UV coordinates rather than an oversized/negative Metal viewport.
@@ -187,24 +231,34 @@
     __weak BCVideoView *weakSelf = self;
     [drawable addPresentedHandler:^(id<MTLDrawable> shown) {
         BCVideoView *s = weakSelf;
-        if (s.presented) s.presented(frame,generation,(uint64_t)(shown.presentedTime*1000000.0));
+        [s.guard lock];
+        BOOL current=NO;
+        if (s) { BCVideoPresentationFinished(&s->_schedule,&ticket); current=generation==s->_generation && revision==s->_revision; }
+        [s.guard unlock];
+        if (current && shown.presentedTime>0 && s.presented) s.presented(frame,generation,(uint64_t)(shown.presentedTime*1000000.0),revision);
+        [s requestRender];
+        [timing presented:(uint64_t)(shown.presentedTime*1000000.0)];
     }];
     [commands addCompletedHandler:^(id<MTLCommandBuffer> finished) {
+        uint64_t completedUs=BCVideoNowUs();
         CFRelease(y); CFRelease(uv); CVPixelBufferRelease(buffer);
         BCVideoView *s = weakSelf; [s.guard lock];
         if (s) {
-            s->_inflight--;
-            if (generation == s->_generation && finished.GPUEndTime > finished.GPUStartTime) {
+            BCVideoGPUFinished(&s->_schedule,&ticket,finished.status==MTLCommandBufferStatusError);
+            if (generation == s->_generation && revision == s->_revision && finished.GPUEndTime > finished.GPUStartTime) {
                 double gpuMs = (finished.GPUEndTime-finished.GPUStartTime)*1000;
                 s->_gpuCount++; s->_gpuTotalMs += gpuMs; s->_maxGpuMs = MAX(s->_maxGpuMs,gpuMs);
             }
         }
         [s.guard unlock];
+        [s requestRender];
+        [timing gpuStarted:(uint64_t)(finished.GPUStartTime*1000000.0) ended:(uint64_t)(finished.GPUEndTime*1000000.0)
+            completed:completedUs failed:finished.status==MTLCommandBufferStatusError];
     }];
-    [commands presentDrawable:drawable]; [commands commit];
+    [commands presentDrawable:drawable]; timing.committedUs=BCVideoNowUs(); [commands commit];
     double renderMs = (CACurrentMediaTime()-renderStarted)*1000;
     [self.guard lock];
-    if (generation == _generation) {
+    if (generation == _generation && revision == _revision) {
         _renderCount++; _drawableWaitTotalMs += drawableWaitMs; _renderTotalMs += renderMs;
         _maxRenderMs = MAX(_maxRenderMs,renderMs);
     }

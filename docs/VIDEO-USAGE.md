@@ -12,7 +12,7 @@ Run the **Build and test** GitHub Actions workflow on the branch containing thes
 changes (push, pull request, or `workflow_dispatch`). Download:
 
 - **Brokencca-Windows-x64**: self-contained host, `brokencca-video.dll`, hardware
-  encoder probe, MercuryIO DLL, documentation and licenses.
+  encoder probe, per-frame timing analyzer, MercuryIO DLL, documentation and licenses.
 - **Brokencca-iOS-unsigned**: `Brokencca-unsigned.ipa`. Sign it with your existing
   installation method before installing. No signing credentials are supplied.
 - **Brokencca-Capture-Windows-x64**: capture preview/calibration and fixture tools.
@@ -117,6 +117,57 @@ timestamps. For the next fixture run, use the same host and command with the
 build-6 IPA and save both logs. Check near-60 unique presentations and compare
 wait/GPU timings and photographed frame differences, including the first startup
 (the build-5 retest logged one presentation timeout before its successful retry).
+
+## Presentation scheduling and per-frame timing
+
+IPA build 7 requests rendering as soon as a decoded frame is ready. Requests
+coalesce on the main queue and select the newest pending buffer. At most one
+drawable awaits presentation and at most two submissions await GPU completion;
+the three-drawable pool and per-frame autorelease pool remain. CADisplayLink
+provides a fallback and cadence measurement rather than delaying every decoded
+frame until its next tick. Zoom, static redraws and touch geometry still use the
+same main-thread renderer. The scheduling change requires a device comparison;
+no new latency improvement is claimed from the local build alone.
+Retest stream/control reconnects, pause/resume and a static source mode switch;
+geometry is republished on a new renderer session even with identical calibration.
+
+For a detailed measurement, use the updated host **and build-7+ IPA**, adding
+`--video-diagnostics` to your existing command. Save its complete output and the
+iOS console output from the same host run. This flag adds optional `frameTiming`
+to video HELLO: normal streaming with no diagnostics retains the original HELLO,
+and older hosts work with the new IPA. An older IPA cannot accept diagnostic
+HELLO from the updated host. Detailed tracing is off without this flag, since
+logging each frame can affect the measurement and power consumption.
+
+The host emits `video_frame_host` records and clock-sync `video_clock` samples.
+iOS emits JSON after `BCCA_VIDEO_FRAME`, including presentation/drop outcome.
+Join them by video generation and frame ID with the packaged analyzer:
+
+```powershell
+./artifacts/windows/Brokencca.VideoTiming.exe `
+  --host ./log/video_fixture_3.log --ios ./log/ios_video_fixture_3.log `
+  --csv ./log/video_frame_timings.csv > ./log/video_frame_timings.jsonl
+```
+
+It outputs durations for each frame and median/p95/max summaries. The timeline
+starts at the WGC capture timestamp, then host acquisition, conversion/encoding,
+encoded queue, send, iOS receive/decode, ready-to-render wait, render submission,
+GPU work and actual Metal presentation. Encoder output time is when the host
+observed/polled it, so `convert_encode` includes conversion and polling delay.
+`send_to_receive` includes the socket write and USB forwarding; `socket_write`
+is reported separately and must not be added to that interval again. GPU callback
+delivery is recorded separately from GPU execution and presentation.
+
+Cross-device `send_to_receive` and `capture_to_present` durations are estimates
+using a nearby clock sample; each result includes its uncertainty and sample age.
+Without a sample within five seconds those durations are blank, while local
+durations remain available. Small negative cross-device estimates within clock
+uncertainty are retained; invalid timestamp order is flagged. Bootstrap frames,
+static redraws, dropped and invalid frames are excluded from steady presentation
+summaries. Missing records are counted, never reconstructed as presentations.
+These measurements cover WGC capture to Metal's presentation timestamp, excluding
+game input/rendering before capture and panel scanout/pixel response afterwards;
+continue the photographed-counter comparison and test normal tracing-off playback.
 
 ## What to test and return
 

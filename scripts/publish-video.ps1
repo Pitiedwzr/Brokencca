@@ -9,6 +9,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Host publish failed.' }
     & $dotnet publish tools/Brokencca.VideoProbe -c Release -r win-x64 --self-contained true -o $OutputDirectory --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Video probe publish failed.' }
+    & $dotnet publish tools/Brokencca.VideoTiming -c Release -r win-x64 --self-contained true -o $OutputDirectory --nologo
+    if ($LASTEXITCODE -ne 0) { throw 'Video timing analyzer publish failed.' }
     & "$PSScriptRoot/build-video.ps1" -Compiler $Compiler -OutputDirectory $OutputDirectory
     Copy-Item -LiteralPath README.md,LICENSE,NOTICE -Destination $OutputDirectory -Force
     $videoDocsDirectory = Join-Path $OutputDirectory 'docs'

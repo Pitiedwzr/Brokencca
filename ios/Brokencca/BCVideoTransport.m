@@ -52,6 +52,7 @@ static BOOL BCConfig(NSDictionary *c) {
 @property(nonatomic) BCVideoPhase phase;
 @property(nonatomic) uint32_t incoming, outgoing;
 @property(nonatomic) BOOL haveIncoming, haveIdr, failing;
+@property(nonatomic) BOOL frameTiming;
 @property(nonatomic) uint64_t generation, lastGeneration, lastReceived, lastDecoded, lastPresented, presentedAt;
 @property(nonatomic) NSTimeInterval lastMessage, partialSince, phaseSince, lastReport;
 @property(nonatomic) NSUInteger pendingWrites, decodedCount, receivedCount, presentedCount;
@@ -64,15 +65,18 @@ static BOOL BCConfig(NSDictionary *c) {
         _queue=dispatch_queue_create("org.brokencca.video.transport",DISPATCH_QUEUE_SERIAL); _decoder=[BCVideoDecoder new];
         _pending=[NSMutableDictionary dictionary];
         __weak BCVideoTransport *weakSelf=self;
-        _decoder.decoded=^(CVPixelBufferRef buffer,uint64_t frame,uint64_t generation,BCVideoGeometry *geometry) {
+        _decoder.decoded=^(CVPixelBufferRef buffer,uint64_t frame,uint64_t generation,BCVideoGeometry *geometry,BCVideoTiming *timing) {
             CVPixelBufferRetain(buffer);
             BCVideoTransport *s=weakSelf;
             if (!s) { CVPixelBufferRelease(buffer); return; }
             dispatch_async(s.queue, ^{
                 if (s.connection && s.generation==generation && s.phase==BCVideoStreaming) {
                     [s.pending removeObjectForKey:@(frame)];
-                    if (frame>s.lastDecoded) { s.lastDecoded=frame; s.decodedCount++; [s.videoView enqueueBuffer:buffer frame:frame generation:generation geometry:geometry]; }
-                }
+                    if (frame>s.lastDecoded) {
+                        s.lastDecoded=frame; s.decodedCount++; timing.readyUs=BCVideoNowUs();
+                        [s.videoView enqueueBuffer:buffer frame:frame generation:generation geometry:geometry timing:timing];
+                    } else [timing dropped:@"stale-decode"];
+                } else [timing dropped:@"generation-retired"];
                 CVPixelBufferRelease(buffer);
             });
         };
@@ -158,6 +162,7 @@ static BOOL BCConfig(NSDictionary *c) {
         const uint8_t *p=self.received.bytes;
         if (!BCValidVideoHeader(p)) { [self fail:@"Invalid video header"]; return; }
         NSUInteger total=BCVideoHeaderSize+BCGet32(p+8); if (self.received.length<total) return;
+        uint64_t receivedUs=BCVideoNowUs();
         uint8_t type=p[5]; BOOL idr=p[6]!=0; uint32_t sequence=BCGet32(p+12);
         uint64_t generation=BCGet64(p+16),frame=BCGet64(p+24),captured=BCGet64(p+32);
         if (self.haveIncoming && (int32_t)(sequence-self.incoming)<=0) { [self fail:@"Stale video sequence"]; return; }
@@ -177,6 +182,9 @@ static BOOL BCConfig(NSDictionary *c) {
             NSMutableString *expected=[NSMutableString string]; const uint8_t *token=self.boundControlToken.bytes;
             for (NSUInteger i=0;i<self.boundControlToken.length;i++) [expected appendFormat:@"%02X",token[i]];
             if ([json[@"sessionToken"] length]!=32 || [expected caseInsensitiveCompare:json[@"sessionToken"]]!=NSOrderedSame) { [self fail:@"Video control token mismatch"]; return; }
+            id timing=json[@"frameTiming"];
+            if (timing && (![timing isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)timing)!=CFBooleanGetTypeID())) { [self fail:@"Invalid frame timing option"]; return; }
+            self.frameTiming=[timing boolValue];
             [self send:BCVideoHelloAck json:@{@"maxWidth":@1920,@"maxHeight":@1920,@"maxPixels":@2073600,@"maxFps":@60,@"maxAuBytes":@(BCVideoMaxAU),@"profiles":@[@"main",@"baseline"],@"maxLevel":@42}];
             self.phase=BCVideoWaitingConfig; self.phaseSince=self.lastMessage; continue;
         }
@@ -201,9 +209,9 @@ static BOOL BCConfig(NSDictionary *c) {
             NSString *t1=json[@"t1Us"];
             if (![t1 isKindOfClass:NSString.class] || !t1.length || t1.length>20 ||
                 [t1 rangeOfCharacterFromSet:NSCharacterSet.decimalDigitCharacterSet.invertedSet].location!=NSNotFound) { [self fail:@"Invalid clock ping"]; return; }
-            uint64_t now=(uint64_t)(NSProcessInfo.processInfo.systemUptime*1000000.0);
+            uint64_t now=receivedUs;
             [self send:BCVideoClockPong json:@{@"t1Us":t1,@"t2Us":[NSString stringWithFormat:@"%llu",(unsigned long long)now],
-                @"t3Us":[NSString stringWithFormat:@"%llu",(unsigned long long)(NSProcessInfo.processInfo.systemUptime*1000000.0)]}];
+                @"t3Us":[NSString stringWithFormat:@"%llu",(unsigned long long)BCVideoNowUs()]}];
             continue;
         }
         if (type==BCVideoStatus) {
@@ -217,7 +225,9 @@ static BOOL BCConfig(NSDictionary *c) {
         }
         self.haveIdr=YES; self.lastReceived=frame; self.receivedCount++;
         self.pending[@(frame)]=@(NSProcessInfo.processInfo.systemUptime);
-        [self.decoder decode:payload frame:frame capturedUs:captured generation:generation];
+        BCVideoTiming *timing=[BCVideoTiming new]; timing.frame=frame; timing.generation=generation;
+        timing.capturedUs=captured; timing.receivedUs=receivedUs; timing.enabled=self.frameTiming;
+        [self.decoder decode:payload timing:timing];
     }
 }
 - (void)send:(uint8_t)type json:(NSDictionary *)json {
@@ -272,9 +282,14 @@ static BOOL BCConfig(NSDictionary *c) {
 }
 - (void)setVideoView:(BCVideoView *)view {
     _videoView=view; __weak BCVideoTransport *weakSelf=self;
-    view.presented=^(uint64_t frame,uint64_t generation,uint64_t timeUs) {
+    view.presented=^(uint64_t frame,uint64_t generation,uint64_t timeUs,uint64_t revision) {
         BCVideoTransport *s=weakSelf; if (!s) return;
-        dispatch_async(s.queue, ^{ if (s.generation==generation && frame>s.lastPresented) { s.lastPresented=frame; s.presentedAt=timeUs; s.presentedCount++; } });
+        dispatch_async(s.queue, ^{
+            if (s.connection && s.phase==BCVideoStreaming && s.generation==generation && frame>s.lastPresented &&
+                [s.videoView isGenerationActive:generation revision:revision]) {
+                s.lastPresented=frame; s.presentedAt=timeUs; s.presentedCount++;
+            }
+        });
     };
 }
 - (void)fail:(NSString *)reason {

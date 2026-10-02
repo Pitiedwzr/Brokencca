@@ -380,6 +380,39 @@ not been reproduced or performance-validated locally: Xcode compilation and
 the next iPad fixture run remain required. No host or encoder change is needed
 for this retest; compare both logs, startup recovery and photographed delay.
 
+The build-6 device retest, `log/ios_video_fixture_2.log` and
+`log/video_fixture_2.log`, confirms a 60.003 Hz display callback cadence in all
+61 host samples, no video failures and a single generation at 10 Mbps. Final
+iOS generation means are 0.056 ms drawable wait, 0.851 ms render call and
+0.808 ms GPU execution (GPU maximum 2.443 ms). The user observes a two/three
+fixture-frame difference, about 33–50 ms at nominal 60 fps. Approximately 9%
+of decoded frames are still replaced before presentation; display callback
+cadence alone is not sustained unique-frame acceptance. The logs establish that
+the drawable stall is removed, but do not time the rest of the pipeline.
+
+Build 7 implements immediate coalesced render requests on decode readiness and
+presentation/GPU completion, with one unpresented drawable and two GPU submissions.
+CADisplayLink remains a fallback/cadence monitor. Portable tests exercise burst
+coalescing, presentation/GPU callback order, separate ownership limits, pause,
+queued work retired before drawing, GPU errors and duplicate/late callbacks.
+
+Opt-in host/iOS per-frame traces and `Brokencca.VideoTiming` correlate capture,
+encoder, transport, decode, render, GPU and actual presentation by generation
+and frame ID. Tests check additive stage boundaries, signed clock offsets,
+uncertainty, missing GPU/clock samples, invalid ordering, stale generations,
+drops, redraws and syslog JSON extraction. Device measurements require both
+rebuilt binaries and another diagnostic fixture run; no build-7 latency change
+or Xcode compilation is claimed from this Windows workspace.
+
+The local Release solution build completes with zero warnings/errors, all 37
+regressions pass, and the portable iOS C suite passes with warnings treated as
+errors. The published host passes handshake recovery/ordered input/disconnect
+release smoke checks. The packaged timing analyzer's synthetic JSON/CSV smoke
+test yields the expected 16.667 ms timeline with a negative clock offset and
+excludes dropped/static-redraw records from steady summaries. Renderer revisions
+also force geometry publication on reconnect with identical calibration and
+reject presentation feedback from retired sessions that reuse a generation ID.
+
 The follow-up `log/video_fixture_new.log` confirms control-token negotiation now
 passes and the AMD hardware encoder starts at 1280x720. The next failure,
 `Value does not fall within the expected range`, was reproduced locally by

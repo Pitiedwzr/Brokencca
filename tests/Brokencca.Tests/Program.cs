@@ -13,6 +13,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("control v2 binds video token and preserves input lease", ControlVideoHandshake),
     ("video wire framing and AVC validation", VideoProtocolTests.Framing),
     ("H.264 configuration, non-B pictures and input protection", () => Sync(VideoProtocolTests.Codec)),
+    ("per-frame timing correlation, clock uncertainty and missing/drop timestamps", () => Sync(VideoTimingTests.Pipeline)),
     ("fragmented and concatenated frames", Fragments),
     ("reject malformed headers and payloads", InvalidFrames),
     ("reject truncated header and payload", TruncatedFrames),

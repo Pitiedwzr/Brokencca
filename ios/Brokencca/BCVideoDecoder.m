@@ -5,6 +5,7 @@
 @interface BCDecodeContext : NSObject
 @property(nonatomic) uint64_t frame, generation;
 @property(nonatomic, strong) BCVideoGeometry *geometry;
+@property(nonatomic, strong) BCVideoTiming *timing;
 @end
 @implementation BCDecodeContext
 @end
@@ -22,13 +23,14 @@ static void BCDecoded(void *refcon, void *frameRefcon, OSStatus status, VTDecode
                       CVImageBufferRef image, CMTime presentation, CMTime duration) {
     BCVideoDecoder *decoder = (__bridge BCVideoDecoder *)refcon;
     BCDecodeContext *context = (__bridge_transfer BCDecodeContext *)frameRefcon;
-    if (status || !image) { if (decoder.failed) decoder.failed(@"VideoToolbox decode failed",context.generation); return; }
+    context.timing.decodedUs=BCVideoNowUs();
+    if (status || !image) { [context.timing dropped:@"decode-error"]; if (decoder.failed) decoder.failed(@"VideoToolbox decode failed",context.generation); return; }
     CGSize coded = context.geometry.codedSize;
     if (CVPixelBufferGetPixelFormatType(image) != kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
         CVPixelBufferGetPlaneCount(image) != 2 || CVPixelBufferGetWidth(image) != (size_t)coded.width || CVPixelBufferGetHeight(image) != (size_t)coded.height) {
-        if (decoder.failed) decoder.failed(@"Decoder output format/dimensions changed",context.generation); return;
+        [context.timing dropped:@"decode-format"]; if (decoder.failed) decoder.failed(@"Decoder output format/dimensions changed",context.generation); return;
     }
-    if (decoder.decoded) decoder.decoded(image,context.frame,context.generation,context.geometry);
+    if (decoder.decoded) decoder.decoded(image,context.frame,context.generation,context.geometry,context.timing);
 }
 
 @implementation BCVideoDecoder
@@ -71,20 +73,22 @@ static void BCDecoded(void *refcon, void *frameRefcon, OSStatus status, VTDecode
         completion(YES,verified,nil);
     });
 }
-- (void)decode:(NSData *)accessUnit frame:(uint64_t)frame capturedUs:(uint64_t)captured generation:(uint64_t)generation {
+- (void)decode:(NSData *)accessUnit timing:(BCVideoTiming *)timing {
     dispatch_async(self.queue, ^{
-        if (!self->_session || self.generation!=generation) return;
+        uint64_t frame=timing.frame,generation=timing.generation,captured=timing.capturedUs;
+        if (!self->_session || self.generation!=generation) { [timing dropped:@"generation-retired"]; return; }
         CMBlockBufferRef block=NULL; CMSampleBufferRef sample=NULL;
         OSStatus status=CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault,NULL,accessUnit.length,kCFAllocatorDefault,NULL,0,accessUnit.length,0,&block);
         if (!status) status=CMBlockBufferReplaceDataBytes(accessUnit.bytes,block,0,accessUnit.length);
         CMSampleTimingInfo timing={CMTimeMake(1,60),CMTimeMake((int64_t)captured,1000000),kCMTimeInvalid}; size_t size=accessUnit.length;
         if (!status) status=CMSampleBufferCreateReady(kCFAllocatorDefault,block,self->_format,1,1,&timing,1,&size,&sample);
-        if (status) { if (block) CFRelease(block); if (sample) CFRelease(sample); if (self.failed) self.failed(@"Could not create decode sample",generation); return; }
-        BCDecodeContext *context=[BCDecodeContext new]; context.frame=frame; context.generation=generation; context.geometry=self.geometry;
+        if (status) { [timing dropped:@"decode-unavailable"]; if (block) CFRelease(block); if (sample) CFRelease(sample); if (self.failed) self.failed(@"Could not create decode sample",generation); return; }
+        BCDecodeContext *context=[BCDecodeContext new]; context.frame=frame; context.generation=generation; context.geometry=self.geometry; context.timing=timing;
         void *retained=(__bridge_retained void *)context;
         VTDecodeInfoFlags flags=0;
+        timing.decodeSubmittedUs=BCVideoNowUs();
         status=VTDecompressionSessionDecodeFrame(self->_session,sample,kVTDecodeFrame_EnableAsynchronousDecompression,retained,&flags);
-        if (status) { CFBridgingRelease(retained); if (self.failed) self.failed(@"Hardware decode submission failed",generation); }
+        if (status) { [timing dropped:@"decode-error"]; CFBridgingRelease(retained); if (self.failed) self.failed(@"Hardware decode submission failed",generation); }
         CFRelease(sample); CFRelease(block);
     });
 }

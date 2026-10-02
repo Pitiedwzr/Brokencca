@@ -32,7 +32,7 @@ jobs:
             -Compiler gcc.exe `
             -OutputDirectory artifacts/windows `
             -Test
-      - name: Publish host, video probe and hardware encoder DLL
+      - name: Publish host, video probe, timing analyzer and hardware encoder DLL
         shell: pwsh
         run: ./scripts/publish-video.ps1 -Compiler g++.exe -OutputDirectory artifacts/windows
       - name: Smoke test published host

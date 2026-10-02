@@ -6,6 +6,7 @@
 #include "../ios/Brokencca/BCVideoWire.h"
 #include "../ios/Brokencca/BCVideoJson.h"
 #include "../ios/Brokencca/BCVideoLayout.h"
+#include "../ios/Brokencca/BCVideoSchedule.h"
 #include "../ios/Brokencca/BCLed.h"
 
 static void test_video_layout(void) {
@@ -42,8 +43,46 @@ static void test_video_layout(void) {
     }
 }
 
+static void test_video_schedule(void) {
+    BCVideoSchedule s={0}; BCVideoRenderTicket first={0},second={0};
+    assert(!BCVideoRequestRender(&s,false));
+    assert(BCVideoRequestRender(&s,true));
+    for (int i=0;i<1000;i++) assert(!BCVideoRequestRender(&s,true)); // coalesced burst
+    assert(BCVideoBeginRender(&s,true)); assert(s.gpu==1 && s.presenting==1 && !s.queued);
+    BCVideoGPUFinished(&s,&first,false); // GPU done is not the same as presentation done
+    assert(s.gpu==0 && s.presenting==1 && !BCVideoRequestRender(&s,true));
+    BCVideoPresentationFinished(&s,&first); assert(BCVideoRequestRender(&s,true));
+    assert(BCVideoBeginRender(&s,true)); first=(BCVideoRenderTicket){0};
+    BCVideoPresentationFinished(&s,&first); // callback order can be reversed
+    assert(BCVideoRequestRender(&s,true)); assert(BCVideoBeginRender(&s,true));
+    assert(s.gpu==2 && s.presenting==1 && !BCVideoRequestRender(&s,true));
+    BCVideoPresentationFinished(&s,&second); assert(!BCVideoRequestRender(&s,true)); // GPU bound
+    BCVideoGPUFinished(&s,&first,false); BCVideoGPUFinished(&s,&second,false);
+    assert(s.gpu==0 && s.presenting==0);
+    assert(BCVideoRequestRender(&s,true)); s.paused=true;
+    assert(!BCVideoBeginRender(&s,true) && !s.queued); assert(!BCVideoRequestRender(&s,true));
+    s.paused=false; assert(BCVideoRequestRender(&s,true));
+    assert(!BCVideoBeginRender(&s,false)); // retired generation's queued request
+    assert(s.gpu==0 && s.presenting==0 && !s.queued);
+    for (int i=0;i<1000;i++) {
+        first=(BCVideoRenderTicket){0}; assert(BCVideoRequestRender(&s,true)); assert(BCVideoBeginRender(&s,true));
+        BCVideoGPUFinished(&s,&first,true); // error frees both slots even without a presentation callback
+        BCVideoPresentationFinished(&s,&first); BCVideoGPUFinished(&s,&first,true); // late/duplicate callbacks
+        assert(s.gpu==0 && s.presenting==0);
+    }
+    const char *hello="{\"sessionToken\":\"00000000000000000000000000000000\",\"videoVersion\":1}";
+    const char *timed="{\"sessionToken\":\"00000000000000000000000000000000\",\"videoVersion\":1,\"frameTiming\":true}";
+    const char *duplicate="{\"sessionToken\":\"x\",\"videoVersion\":1,\"frameTiming\":true,\"frameTiming\":false}";
+    const char *missing="{\"sessionToken\":\"x\",\"frameTiming\":true}";
+    assert(BCVideoJSONFields((const uint8_t *)hello,strlen(hello),BCVideoHello));
+    assert(BCVideoJSONFields((const uint8_t *)timed,strlen(timed),BCVideoHello));
+    assert(!BCVideoJSONFields((const uint8_t *)duplicate,strlen(duplicate),BCVideoHello));
+    assert(!BCVideoJSONFields((const uint8_t *)missing,strlen(missing),BCVideoHello));
+}
+
 int main(void) {
     test_video_layout();
+    test_video_schedule();
     const char *good_ready = "{\"hardwareVerified\":false}";
     const char *duplicate_ready = "{\"hardwareVerified\":true,\"hardwareVerified\":false}";
     const char *extra_ready = "{\"hardwareVerified\":true,\"extra\":0}";
@@ -187,6 +226,6 @@ int main(void) {
     assert(BCLedIndexForZone(0) == 246 && BCLedIndexForZone(119) == 472);
     assert(BCLedIndexForZone(120) == 238 && BCLedIndexForZone(239) == 0);
     assert(BCLedIndexForZone(-1) == -1 && BCLedIndexForZone(240) == -1);
-    puts("PASS iOS geometry, calibrated video zoom, wire fixtures, LED header and all 480 LED mappings");
+    puts("PASS iOS video scheduling, geometry/zoom, wire fixtures, LED header and all 480 LED mappings");
     return 0;
 }
