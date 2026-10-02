@@ -183,28 +183,29 @@ rendering/hardware combinations remain additional compatibility coverage.
 
 ## Milestone 3: H.264 stream at 60 fps
 
-Explicitly select a hardware encoder via Media Foundation; verify actual use.
-GPU-convert to NV12. Request low latency, no B-frames, no lookahead where supported,
-and a small rate-control buffer. Start with SDR and a capped resolution around
-720p/1080p (or equivalent square crop), preserving aspect ratio. Experiment with
-10-20 Mbps, then tune to the hardware. Do not tie video capture to touch delivery.
+The original outline was reviewed on 2026-10-02 and needed concrete protocol,
+resource ownership, overload, geometry, and acceptance contracts. The completed
+design is [VIDEO-STREAMING.md](VIDEO-STREAMING.md). The encoder, transport,
+decoder, presentation, and touch transform are implemented for device testing;
+see [VIDEO-USAGE.md](VIDEO-USAGE.md). Xcode compilation and device acceptance
+remain pending on GitHub Actions and the user's setup.
 
-Add a separate iOS listener, tentatively 24865, and negotiate its session ID
-over the control connection. Define codec configuration (SPS/PPS), access-unit
-framing, stream generation, timestamps, dimensions/crop, and keyframe requests.
-Video must not reuse the control parser's 4096-byte limit.
+Start with hardware Media Foundation H.264, GPU NV12 conversion, SDR BT.709,
+60 fps, no B-frames, and 10 Mbps. Preserve the accepted full-client crop; its
+1080x1920 portrait image initially scales to 720x1280. Higher-resolution and
+explicit square-crop settings follow measured hardware capability.
 
-Use VideoToolbox hardware decoding and Metal via CVMetalTextureCache. Bound
-capture/encoder/network/decode/presentation queues. Drop old raw frames before
-encoding and old decoded frames before display; do not drop arbitrary encoded
-reference frames. On excessive encoded backlog, restart at a fresh keyframe.
-Account for bytes already buffered in the reliable transport, which cannot be
-replaced with a newer frame. Lower bitrate/resolution before input is affected.
+Use video port 24865 with its own bounded parser and explicit control-v2 session
+binding. Keep control v1 for input-only compatibility. The detailed plan fixes
+SPS/PPS and access-unit representation, generation/IDR recovery, feedback,
+per-stage queue and age limits, and socket replacement for stale TCP backlog.
 
-Share a viewport/crop/rotation transform between display and touch mapping.
-Reject letterbox touches as a separate viewport rule; do not silently change
-the inherited radial mapping inside the content rectangle. Draw touch feedback
-locally above the video.
+Decode with VideoToolbox and present through Metal at the measured display
+cadence. Share the calibrated crop/circle transform with a transparent local
+touch/LED overlay, retaining the current expanded touch-boundary behavior.
+Validate codec hardware use, color/geometry, unique-frame throughput, visible
+latency, thermal stability, and input performance with video off/on. Fixture
+results and signed-device/real-Mercury acceptance are separate gates.
 
 ## Milestone 4: measurement and packaging
 

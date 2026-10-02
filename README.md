@@ -11,8 +11,9 @@ awaits game-PC retesting; see the validation report. A standalone Windows window
 capture preview and calibration fixture are implemented and locally tested at
 the **60 fps** target. Window capture is now accepted on real Mercury, with
 perfect boot-black circle alignment and no perceptible preview latency reported
-by the user. Streaming video to iOS remains the next milestone; use the
-PC display for gameplay until that path is implemented and validated.
+by the user. Hardware H.264 streaming over USB, iOS VideoToolbox/Metal playback,
+and calibrated touch mapping are now implemented for device testing. Sustained
+60 fps and combined gameplay performance still need validation.
 
 - [Implementation plan and remaining milestones](docs/PLAN.md)
 - [Next milestone: input latency, then video](docs/NEXT-STEPS.md)
@@ -20,6 +21,8 @@ PC display for gameplay until that path is implemented and validated.
 - [Validation results and hardware checks still needed](docs/VALIDATION.md)
 - [Optional MercuryIO backend and iPad LEDs](docs/HOOK-IO.md)
 - [Window capture preview, fixture, and calibration](docs/CAPTURE-USAGE.md)
+- [60 fps iOS video streaming design and acceptance plan](docs/VIDEO-STREAMING.md)
+- [Video build, launch, and device test instructions](docs/VIDEO-USAGE.md)
 
 ## Build and test Windows
 

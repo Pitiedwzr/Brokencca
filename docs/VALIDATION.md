@@ -304,6 +304,16 @@ sequence is `[0]`, `[]`, `[0]`, `[]`. The host remains alive awaiting reconnecti
 
 ## Still needing validation or improvement
 
+The 2026-10-02 video protocol foundation builds in Release and passes the 35/35
+C# regression suite. New checks cover v1/v2 touch compatibility, random token
+echo and mismatch release, fragmented/coalesced video frames, the shared AVC
+header fixture, length limits, IDR/NAL validation, strict JSON fields, and crop
+rejection. The portable C fixture also passes locally with `-Wall -Wextra -Werror`
+and exercises the matching video header, v2 HELLO, and AVC length rules.
+These initial checks establish wire compatibility only. They are superseded for
+implementation/build status by the 2026-10-03 video checks below; Xcode and device
+acceptance remain pending.
+
 - Exact artifact/build provenance and installation method for reproducibility;
   successful installation is established, but workflow logs were not reviewed.
 - Cable removal, background/foreground, rotation, device selection, and game
@@ -316,9 +326,42 @@ sequence is `[0]`, `[]`, `[0]`, `[]`. The host remains alive awaiting reconnecti
   The baseline now identifies the host FIFO as the overflow source; hardware
   confirmation of the fix and end-to-end game latency remain outstanding.
 - Window capture is implemented, fixture-tested, and accepted on the user's
-  Mercury setup as reported above; encoding, iOS video streaming, and audio
-  remain pending.
+  Mercury setup as reported above; the encoded iOS stream is implemented but
+  awaits device acceptance. Audio streaming remains deferred.
 
 The automated checks establish behavior under simulation; the user's device and
 game tests additionally establish practical compatibility on their setup. Neither
 is a quantitative latency guarantee. See PLAN.md for the remaining device checklist.
+
+## Video implementation checks — 2026-10-03
+
+The Windows encoder/transport and iOS decoder/Metal/touch integration are now
+implemented. Release builds have zero warnings/errors; the extended C# suite
+passes 36/36, including real Main/4.2 SPS parsing, non-B slice validation,
+generation parameter-set changes, iOS 15–16 READY compatibility, and the input
+protection signal. The portable iOS C test passes with `-Wall -Wextra -Werror`,
+including strict duplicate/unknown/escaped/nested JSON field rejection.
+
+The synthetic GPU probe on the development laptop's **AMD Radeon(TM) Graphics**
+using **AMDh264Encoder** encoded 180/180 frames at nominal 720x1280/60 and produced
+two IDRs, including the explicit request at frame 90. Independent FFmpeg decoding
+reported no errors; ffprobe reported Main, level 4.2, 720x1280, limited-range
+BT.709, and 180 decoded pictures. Before the optional buffer-control change, the
+observed maximum submit-to-polled-output interval was 16.372 ms in this short
+synthetic run; this is not a Mercury/iOS latency measurement. The published
+package was tested again with the requested 125,000-byte CBR buffer accepted:
+180/180 frames, two IDRs, maximum observed encoder interval 16.347 ms and a clean
+FFmpeg decode. The published host's malformed-handshake recovery, ordered input
+transitions and disconnect-release smoke test also passed.
+
+The probe exposed a driver media-type SPS that differed from the in-band SPS.
+Startup now prefers the actual bitstream parameter sets and uses media-type
+headers only when the picture omits them. Changes in actual parameter sets
+after configuration still trigger a fresh video generation.
+
+GitHub Actions builds/packages the video DLL and probe with the self-contained
+Windows host, then compiles and packages the unsigned iOS app on macOS. No Xcode
+run is claimed from this Windows workspace. The signed IPA, RX 6650 XT encoder,
+USB transport, iPad presentation, full touch calibration, sustained 60 fps,
+thermal behavior, recovery and combined input/video stress tests remain pending.
+See [VIDEO-USAGE.md](VIDEO-USAGE.md) for the exact launch and test checklist.

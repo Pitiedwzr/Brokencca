@@ -66,6 +66,16 @@ Sequence `0x11223344`, timestamp `0x0102030405060708`:
 
 The C# and iOS C header tests use this same fixture. Video framing is a later
 milestone and must negotiate a different payload limit and stream generation.
+The control-v2 codec and iOS HELLO parser now accept a 24-byte HELLO containing
+the existing four layout bytes, a uint32 video capability (1), and a 16-byte
+session token. The host-side v2 session is opt-in with `--video`; the
+current CLI still starts v1 input sessions. V2 keeps TOUCH/RESET layouts and the
+input timeout/sequence rules. The portable video-v1 framing and JSON validation
+helpers and live video owners are implemented. Video uses a separate listener
+on 24865, HELLO token binding, CONFIG/READY, and an initial IDR before normal
+access units. See [VIDEO-USAGE.md](VIDEO-USAGE.md) for build/launch instructions
+and [VIDEO-STREAMING.md](VIDEO-STREAMING.md) for the video wire contract.
+See [VIDEO-STREAMING.md](VIDEO-STREAMING.md) for the full proposed session flow.
 
 ## Optional LED stream v1 (independent of control)
 

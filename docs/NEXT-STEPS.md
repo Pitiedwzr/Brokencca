@@ -161,6 +161,10 @@ acceptance still requires the input gate. Stages:
 2. **Encoded video over USB:** hardware H.264, separate video connection, bounded
    queues, VideoToolbox decoding, and Metal presentation on iOS. Keep touch
    feedback local and keep the game/controller coordinate transform consistent.
+   The reviewed implementation sequence, session/wire contracts, concrete queue
+   budgets, and hardware acceptance matrix are in
+   [VIDEO-STREAMING.md](VIDEO-STREAMING.md). The stream is implemented for device
+   testing; see [VIDEO-USAGE.md](VIDEO-USAGE.md) for builds and launch commands.
 3. **Tune and calibrate:** resolution/bitrate controls, keyframe recovery, audio
    offset assessment, and full input-plus-video stress testing. Keep the original
    30-60 ms capture-to-display range as an unverified engineering target.
