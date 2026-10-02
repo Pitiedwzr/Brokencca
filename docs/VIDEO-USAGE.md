@@ -75,6 +75,33 @@ fresh CONFIG/IDR at reduced settings, up to three attempts. Input queue age over
 serious/critical status also triggers video recovery. Restart the host after
 video disables itself. These are provisional protection budgets for testing.
 
+## Touch area during video
+
+IPA build 5 adds a button in the top-right corner. **Full-size ring** is the
+default: zoom and center the calibrated game circle until its radius matches the
+original input-only controller (`min(view width, view height)/2`). The touch ring,
+local highlights, LEDs and video use the same transform. The image keeps its
+aspect ratio; surrounding game UI can be cropped. The calibrated playfield
+circle stays visible, and areas outside actual video content do not produce input.
+
+Tap the button for **Full image** to show the complete aspect-fit video with a
+smaller, still aligned touch ring. Switching releases current contacts before
+changing the mapping; lift and retouch to continue. The choice is saved across
+app launches, and static images redraw when the mode changes. This is an iOS
+presentation choice; capture calibration and encoding settings do not change.
+
+The fixture center counter advances once per rendered frame. At its default
+60 fps, a photographed seven-frame difference is approximately 117 ms of relative
+display delay. Repeat photos to account for display/camera scan timing. The
+working fixture log shows about 59 frames/sec sent but mostly about 30 Hz render
+callbacks, so unique iPad presentation has not yet met the 60 fps acceptance gate.
+Keep Low Power Mode off during performance testing; iOS may change the actual
+CADisplayLink cadence despite a 60 Hz request. See Apple's
+[display-link frame-rate behavior](https://developer.apple.com/documentation/quartzcore/cadisplaylink).
+Build 5 iOS logs include `low_power`, `render_max_ms` and `drawable_wait_max_ms`
+(maxima since the video generation began) to distinguish power policy and rendering
+or drawable stalls. The Windows log alone cannot establish which cause dominates.
+
 ## What to test and return
 
 1. Run `./Brokencca.VideoProbe.exe video-probe.h264` on the game PC. It must report

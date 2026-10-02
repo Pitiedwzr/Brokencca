@@ -262,8 +262,9 @@ static BOOL BCConfig(NSDictionary *c) {
         @"decodedId":[NSString stringWithFormat:@"%llu",(unsigned long long)self.lastDecoded],@"presentedId":[NSString stringWithFormat:@"%llu",(unsigned long long)self.lastPresented],
         @"presentedAtUs":[NSString stringWithFormat:@"%llu",(unsigned long long)self.presentedAt],@"pendingDecode":@(self.pending.count),@"replacedDecoded":stats[@"replacedDecoded"] ?: @0,@"thermal":thermal,@"displayMilliHz":stats[@"displayMilliHz"] ?: @0}];
     if (now-self.lastReport>=1) {
-        NSLog(@"BCCA_VIDEO received=%lu decoded=%lu presented=%lu pending=%lu generation=%llu thermal=%@",(unsigned long)self.receivedCount,
-            (unsigned long)self.decodedCount,(unsigned long)self.presentedCount,(unsigned long)self.pending.count,(unsigned long long)self.generation,thermal);
+        NSLog(@"BCCA_VIDEO received=%lu decoded=%lu presented=%lu pending=%lu generation=%llu thermal=%@ display_millihz=%@ low_power=%d render_max_ms=%.3f drawable_wait_max_ms=%.3f",(unsigned long)self.receivedCount,
+            (unsigned long)self.decodedCount,(unsigned long)self.presentedCount,(unsigned long)self.pending.count,(unsigned long long)self.generation,thermal,
+            stats[@"displayMilliHz"],NSProcessInfo.processInfo.lowPowerModeEnabled,[stats[@"maxRenderMs"] doubleValue],[stats[@"maxDrawableWaitMs"] doubleValue]);
         self.receivedCount=self.decodedCount=self.presentedCount=0; self.lastReport=now;
     }
 }

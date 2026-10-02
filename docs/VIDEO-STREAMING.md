@@ -357,6 +357,16 @@ device limits can change the actual cadence despite the requested
 
 Implement one immutable geometry snapshot shared by video and touch rendering:
 
+The steps below describe the selectable **Full image** mode. As of IPA build 5,
+the default **Full-size ring** mode scales and centers the image so the calibrated
+circle radius equals the original controller radius on the device. This crops
+surrounding UI while keeping image aspect ratio and video/touch/LED alignment.
+Both modes use the same immutable geometry; zoom affects the coded-image display
+rectangle and its inverse touch transform. A full-device Metal viewport samples
+the visible image via a UV region and draws black outside the coded image, avoiding
+oversized negative viewports. Held contacts are released on mode switches.
+See [VIDEO-USAGE.md](VIDEO-USAGE.md) for the mode button and tradeoff.
+
 1. Convert the confirmed normalized client crop and circle to client pixels.
    Transform source -> crop -> coded content rectangle -> decoded clean aperture
    -> aspect-fit device content in UIKit points. Device scale affects Metal

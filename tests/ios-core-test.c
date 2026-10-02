@@ -5,9 +5,45 @@
 #include "../ios/Brokencca/BCWire.h"
 #include "../ios/Brokencca/BCVideoWire.h"
 #include "../ios/Brokencca/BCVideoJson.h"
+#include "../ios/Brokencca/BCVideoLayout.h"
 #include "../ios/Brokencca/BCLed.h"
 
+static void test_video_layout(void) {
+    const BCVideoLayout layouts[] = {
+        {1280,720,1280,720,{0,0,1,1},{0,0,1280,720},{.54,.47,.39}},
+        {720,1280,1080,1920,{0,0,1,1},{0,0,720,1280},{.5007567,.4708033,.4893998}},
+        {432,864,1080,1920,{.1,.05,.8,.9},{0,0,431,863},{.5,.5,.35}}
+    };
+    const double pi=3.14159265358979323846;
+    double cx,cy,r,vx,vy;
+    BCVideoCircleInView(layouts[0],1024,768,false,&cx,&cy,&r);
+    assert(fabs(cx-552.96)<1e-8 && fabs(cy-366.72)<1e-8 && fabs(r-224.64)<1e-8);
+    assert(!BCVideoMapPoint(layouts[0],1024,768,false,512,20,&vx,&vy)); // fit letterbox
+    for (size_t i=0;i<sizeof(layouts)/sizeof(layouts[0]);i++) {
+        for (int orientation=0;orientation<2;orientation++) {
+            double w=orientation ? 768 : 1024,h=orientation ? 1024 : 768;
+            BCVideoCircleInView(layouts[i],w,h,true,&cx,&cy,&r);
+            assert(fabs(cx-w/2)<1e-8 && fabs(cy-h/2)<1e-8 && fabs(r-fmin(w,h)/2)<1e-8);
+            BCVideoRect coded=BCVideoCodedRect(layouts[i],w,h,true);
+            assert(fabs(coded.width/coded.height-layouts[i].codedWidth/layouts[i].codedHeight)<1e-8);
+            assert(BCVideoMapPoint(layouts[i],w,h,true,cx,cy,&vx,&vy));
+            assert(fabs(vx-1)<1e-8 && fabs(vy-1)<1e-8);
+            for (int side=0;side<2;side++) for (int ring=0;ring<4;ring++) for (int sector=0;sector<30;sector++) {
+                double angle=-pi/2+(sector+.5)*pi/30,distance=r*(.65+ring*.1);
+                double x=cx+cos(angle)*distance*(side ? -1 : 1),y=cy+sin(angle)*distance;
+                assert(BCVideoMapPoint(layouts[i],w,h,true,x,y,&vx,&vy));
+                uint8_t bitmap[30]={0}; BCApplyTouch(vx,vy,2,2,bitmap);
+                int expected=side*120+ring*30+sector;
+                for (int zone=0;zone<240;zone++) assert(((bitmap[zone/8]>>(zone%8))&1)==(zone==expected));
+            }
+            assert(!BCVideoMapPoint(layouts[i],w,h,true,-1,cy,&vx,&vy));
+            assert(!BCVideoMapPoint(layouts[i],w,h,true,cx,h,&vx,&vy));
+        }
+    }
+}
+
 int main(void) {
+    test_video_layout();
     const char *good_ready = "{\"hardwareVerified\":false}";
     const char *duplicate_ready = "{\"hardwareVerified\":true,\"hardwareVerified\":false}";
     const char *extra_ready = "{\"hardwareVerified\":true,\"extra\":0}";
@@ -151,6 +187,6 @@ int main(void) {
     assert(BCLedIndexForZone(0) == 246 && BCLedIndexForZone(119) == 472);
     assert(BCLedIndexForZone(120) == 238 && BCLedIndexForZone(239) == 0);
     assert(BCLedIndexForZone(-1) == -1 && BCLedIndexForZone(240) == -1);
-    puts("PASS iOS geometry, wire fixtures, LED header and all 480 LED mappings");
+    puts("PASS iOS geometry, calibrated video zoom, wire fixtures, LED header and all 480 LED mappings");
     return 0;
 }

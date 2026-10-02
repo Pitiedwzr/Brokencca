@@ -6,6 +6,7 @@
 @property(nonatomic, copy) void (^geometryChanged)(BCVideoGeometry *geometry);
 @property(nonatomic, copy) void (^presented)(uint64_t frame, uint64_t generation, uint64_t timeUs);
 @property(nonatomic, readonly) BOOL available;
+@property(nonatomic) BOOL zoomToPlayfield;
 - (void)activateGeneration:(uint64_t)generation;
 - (void)enqueueBuffer:(CVPixelBufferRef)buffer frame:(uint64_t)frame generation:(uint64_t)generation geometry:(BCVideoGeometry *)geometry;
 - (void)setPaused:(BOOL)paused;

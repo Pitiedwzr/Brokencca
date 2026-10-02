@@ -335,6 +335,47 @@ is a quantitative latency guarantee. See PLAN.md for the remaining device checkl
 
 ## Video implementation checks — 2026-10-03
 
+The user reports successful fixture streaming and supplied
+`log/video_fixture_working.log`: 89 video summaries, average 59.10 frames sent per
+summary, no video failures, nominal thermal status throughout. Decoder pending
+depth is generally zero or one. 81/89 cadence samples were below 45 Hz, usually
+near 30 Hz, and the cumulative replaced-decoded counter reached 2503. These
+samples establish working transport/playback, but do not pass sustained unique
+60 fps presentation. The user photographed a seven-counter-frame difference
+between the fixture window and iPad, approximately 117 ms at the fixture's default
+60 fps; camera/display phase and scan timing remain measurement limitations.
+The host identifies AMDh264Encoder on AMD Radeon(TM) Graphics, confirming hardware
+encoding on the laptop's integrated GPU.
+
+The user requested zooming the game so the calibrated ring matches the original
+larger controller size. IPA build 5 adds a persisted Full-size ring/Full image
+button and defaults to calibrated playfield zoom. Image aspect ratio is preserved;
+surrounding UI is cropped. Video, touch mapping and the overlay share the transform,
+and mode switches release contacts and redraw static frames. The portable C tests
+exercise the actual shared layout math: full-size center/radius, preserved aspect,
+both device orientations, portrait/landscape sources, cropped/padded content,
+letterbox/out-of-view rejection and all 240 zones. They pass with warnings treated
+as errors. iOS diagnostics now also log Low Power Mode and maximum render/drawable
+wait times per generation. Xcode compilation and this UI/device retest remain
+pending through GitHub Actions.
+
+The follow-up `log/video_fixture_new.log` confirms control-token negotiation now
+passes and the AMD hardware encoder starts at 1280x720. The next failure,
+`Value does not fall within the expected range`, was reproduced locally by
+feeding the encoder a texture from the actual capture allocator. That allocator
+used only `ShaderResource`, which is not a supported binding for a D3D11 video
+processor input view. Streaming GPU devices now add `RenderTarget` to owned
+capture textures; staging/readback textures remain unbound. See Microsoft's
+[video processor input resource requirements](https://learn.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11videodevice-createvideoprocessorinputview).
+
+The hardware probe now copies GPU-rendered frames into textures from the same
+allocator used by WGC before submitting them. It failed with the original flags
+and passed after the change: 180/180 pictures, two IDRs, and an error-free
+independent FFmpeg decode. The Windows Release build and 36/36 regressions also
+pass. Native operation failures now include HRESULT and submission texture/crop
+details. This fix is Windows-only; the installed build-4 IPA can be retained.
+Full device streaming confirmation remains pending.
+
 Fixture device test exposed immediate EOF on all three video attempts before
 any encoder startup log, while input heartbeats remained healthy. Source review
 found `BCVideoTransport.setControlToken:` assigning `self.controlToken`, which
