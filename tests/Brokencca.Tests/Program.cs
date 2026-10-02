@@ -10,6 +10,9 @@ var tests = new (string Name, Func<Task> Run)[]
     ("boot black circle fitting and consensus", () => Sync(CaptureTests.Calibration)),
     ("capture device recovery is bounded", () => Sync(CaptureTests.Recovery)),
     ("wire golden bytes", () => Sync(WireGolden)),
+    ("control v2 binds video token and preserves input lease", ControlVideoHandshake),
+    ("video wire framing and AVC validation", VideoProtocolTests.Framing),
+    ("H.264 configuration, non-B pictures and input protection", () => Sync(VideoProtocolTests.Codec)),
     ("fragmented and concatenated frames", Fragments),
     ("reject malformed headers and payloads", InvalidFrames),
     ("reject truncated header and payload", TruncatedFrames),
@@ -65,6 +68,39 @@ static void WireGolden()
 {
     byte[] bytes = Frame(MessageType.Hello, 0x11223344, WireProtocol.HelloPayload);
     Check(Convert.ToHexString(bytes) == "424343410101000004000000443322110807060504030201F0001E00");
+}
+
+static async Task ControlVideoHandshake()
+{
+    byte[]? readyToken = null;
+    bool ended = false;
+    using (var peer = await Peer.Create(enableVideo: true,
+        videoReady: token => readyToken = token.ToArray(), videoEnded: () => ended = true))
+    {
+        Check(peer.HostHello.Version == 2 && peer.HostHello.Payload.Length == 24);
+        Check(peer.HostHello.Payload.AsSpan(0, 4).SequenceEqual(WireProtocol.HelloPayload));
+        Check(BinaryPrimitives.ReadUInt32LittleEndian(peer.HostHello.Payload.AsSpan(4)) == WireProtocol.VideoCapability);
+        Check(Convert.ToHexString(peer.HostHello.Payload.AsSpan(8)).Length == 32);
+        await peer.Hello();
+        await peer.Touch(1, false);
+        await peer.Touch(2, true);
+        await peer.WaitForCount(3);
+        Check(readyToken is not null && readyToken.AsSpan().SequenceEqual(peer.HostHello.Payload.AsSpan(8)));
+        peer.Client.Close();
+        await Throws<EndOfStreamException>(() => peer.Run);
+        Check(ended && !peer.Sink.States[^1][0]);
+    }
+    using (var peer = await Peer.Create(enableVideo: true))
+    {
+        byte[] wrongToken = (byte[])peer.HostHello.Payload.Clone();
+        wrongToken[8] ^= 1;
+        await WireProtocol.WriteAsync(peer.Stream, new(MessageType.Hello, 0, WireProtocol.NowUs, wrongToken, 2), peer.Stop.Token);
+        await Throws<InvalidDataException>(() => peer.Run);
+        Check(peer.Sink.States.All(state => !state[0]));
+    }
+    byte[] malformed = WireProtocol.Encode(new(MessageType.Hello, 0, 0, WireProtocol.VideoHelloPayload(new byte[16]), 2));
+    malformed[28] = 2;
+    await Throws<InvalidDataException>(async () => await WireProtocol.ReadAsync(new MemoryStream(malformed), default));
 }
 
 static async Task Fragments()
@@ -336,7 +372,9 @@ sealed class Peer : IDisposable
     public NetworkStream Stream => Client.GetStream();
     public RecordingSink Sink { get; } = new();
     public Task Run { get; private set; } = null!;
-    public static async Task<Peer> Create(int timeoutMs = 2000, IInputSessionObserver? observer = null)
+    public WireMessage HostHello { get; private set; } = null!;
+    public static async Task<Peer> Create(int timeoutMs = 2000, IInputSessionObserver? observer = null,
+        bool enableVideo = false, Action<ReadOnlyMemory<byte>>? videoReady = null, Action? videoEnded = null)
     {
         var peer = new Peer();
         var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -345,21 +383,22 @@ sealed class Peer : IDisposable
         {
             await peer.Client.ConnectAsync((IPEndPoint)listener.LocalEndpoint, peer.Stop.Token);
             peer.server = await listener.AcceptTcpClientAsync(peer.Stop.Token);
-            peer.Run = new InputSession(peer.Sink, TimeSpan.FromMilliseconds(timeoutMs), observer).RunAsync(peer.server.GetStream(), peer.Stop.Token);
-            var hello = await WireProtocol.ReadAsync(peer.Stream, peer.Stop.Token);
-            if (hello.Type != MessageType.Hello) throw new Exception("Host did not send HELLO.");
+            peer.Run = new InputSession(peer.Sink, TimeSpan.FromMilliseconds(timeoutMs), observer,
+                enableVideo, videoReady, videoEnded).RunAsync(peer.server.GetStream(), peer.Stop.Token);
+            peer.HostHello = await WireProtocol.ReadAsync(peer.Stream, peer.Stop.Token);
+            if (peer.HostHello.Type != MessageType.Hello) throw new Exception("Host did not send HELLO.");
             return peer;
         }
         finally { listener.Stop(); }
     }
-    public ValueTask Hello(uint seq = 0) => Send(MessageType.Hello, seq, WireProtocol.HelloPayload);
+    public ValueTask Hello(uint seq = 0) => Send(MessageType.Hello, seq, HostHello.Payload);
     public ValueTask Touch(uint seq, bool held)
     {
         byte[] bitmap = new byte[30]; if (held) bitmap[0] = 1;
         return Send(MessageType.Touch, seq, bitmap);
     }
     public ValueTask Send(MessageType type, uint seq, byte[]? bytes = null) =>
-        WireProtocol.WriteAsync(Stream, new(type, seq, WireProtocol.NowUs, bytes ?? []), Stop.Token);
+        WireProtocol.WriteAsync(Stream, new(type, seq, WireProtocol.NowUs, bytes ?? [], HostHello.Version), Stop.Token);
     public async Task WaitForCount(int count)
     {
         while (Sink.States.Count < count) await Task.Delay(1, Stop.Token);

@@ -3,9 +3,21 @@
 #include <string.h>
 #include "../ios/Brokencca/BCTouchGeometry.h"
 #include "../ios/Brokencca/BCWire.h"
+#include "../ios/Brokencca/BCVideoWire.h"
+#include "../ios/Brokencca/BCVideoJson.h"
 #include "../ios/Brokencca/BCLed.h"
 
 int main(void) {
+    const char *good_ready = "{\"hardwareVerified\":false}";
+    const char *duplicate_ready = "{\"hardwareVerified\":true,\"hardwareVerified\":false}";
+    const char *extra_ready = "{\"hardwareVerified\":true,\"extra\":0}";
+    const char *escaped_ready = "{\"hardware\\u0056erified\":true}";
+    const char *nested_ready = "{\"hardwareVerified\":{\"value\":true}}";
+    assert(BCVideoJSONFields((const uint8_t *)good_ready,strlen(good_ready),BCVideoReady));
+    assert(!BCVideoJSONFields((const uint8_t *)duplicate_ready,strlen(duplicate_ready),BCVideoReady));
+    assert(!BCVideoJSONFields((const uint8_t *)extra_ready,strlen(extra_ready),BCVideoReady));
+    assert(!BCVideoJSONFields((const uint8_t *)escaped_ready,strlen(escaped_ready),BCVideoReady));
+    assert(!BCVideoJSONFields((const uint8_t *)nested_ready,strlen(nested_ready),BCVideoReady));
     assert(BCZoneAt(500, 500, 1000, 1000) == -1);
     assert(BCZoneAt(501, 500, 1000, 1000) == 15);
     assert(BCZoneAt(1100, 500, 1000, 1000) == 105);
@@ -100,6 +112,29 @@ int main(void) {
     BCHeader(header, BCHello, 4, 0x11223344, UINT64_C(0x0102030405060708));
     assert(memcmp(header, expected, sizeof(header)) == 0);
     assert(BCGet32(header + 12) == 0x11223344);
+    uint8_t video_hello[BCHeaderSize + 24] = {0};
+    BCHeaderVersion(video_hello, 2, BCHello, 24, 0, 8);
+    const uint8_t layout[] = {240, 0, 30, 0};
+    memcpy(video_hello + BCHeaderSize, layout, 4);
+    BCPut32(video_hello + BCHeaderSize + 4, BCVideoCapability);
+    assert(BCValidHello(video_hello, sizeof(video_hello)));
+    video_hello[BCHeaderSize + 4] = 2;
+    assert(!BCValidHello(video_hello, sizeof(video_hello)));
+    uint8_t video_header[BCVideoHeaderSize];
+    BCVideoHeader(video_header, BCVideoAU, true, 6, 0x11223344,
+        UINT64_C(0x0102030405060708), UINT64_C(0x1112131415161718), UINT64_C(0x2122232425262728));
+    const uint8_t expected_video_header[] = {
+        0x42,0x43,0x56,0x44,1,5,1,0,6,0,0,0,0x44,0x33,0x22,0x11,
+        8,7,6,5,4,3,2,1,0x18,0x17,0x16,0x15,0x14,0x13,0x12,0x11,
+        0x28,0x27,0x26,0x25,0x24,0x23,0x22,0x21
+    };
+    assert(memcmp(video_header, expected_video_header, sizeof(video_header)) == 0);
+    assert(BCValidVideoHeader(video_header));
+    const uint8_t video_au[] = {0, 0, 0, 2, 0x65, 0x88};
+    assert(BCValidAvcc(video_au, sizeof(video_au), true));
+    assert(!BCValidAvcc(video_au, sizeof(video_au), false));
+    video_header[6] = 2;
+    assert(!BCValidVideoHeader(video_header));
     uint8_t led_header[BCLedHeaderSize] = {'B','C','L','D',1,0,0,0};
     BCPut32(led_header + 8, BCLedPayloadSize); BCPut32(led_header + 12, UINT32_MAX);
     assert(BCValidLedHeader(led_header));
