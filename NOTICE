@@ -27,3 +27,11 @@ are references for shared-memory IO; neither project's DLLs are redistributed.
 
 libusbmuxd/iproxy and Apple Mobile Device Support are external dependencies,
 not redistributed here. System.IO.Ports is restored via NuGet under its own license.
+
+The Windows capture tools restore Vortice.Direct3D11, Vortice.DXGI, and
+Vortice.D3DCompiler 3.6.2 (Amer Koleci and contributors, MIT) and their NuGet
+dependencies, plus Microsoft's Windows SDK .NET projections. The capture
+implementation is new; toucca remains the window-discovery/calibration reference.
+The optional IGraphicsCaptureSession5 ABI signature is checked against Microsoft's
+windows-rs Windows/Graphics/Capture metadata. Windows Graphics Capture and
+d3dcompiler_47 are system APIs, not separately redistributed DLLs in this source.

@@ -7,14 +7,19 @@ backend and Brokenithm-iOS's usbmux connection model.
 multitouch, USB forwarding, and WACCA serial input work on the tested setup.
 Heavy multitouch/fast movement can cause delay or an overflow/reconnect; reducing
 that latency is the next milestone. A host scheduling fix is implemented and
-awaits game-PC retesting; see the validation report. Window/video streaming remains planned at
-**60 fps** and is not implemented yet. Use the PC display for this milestone.
+awaits game-PC retesting; see the validation report. A standalone Windows window
+capture preview and calibration fixture are implemented and locally tested at
+the **60 fps** target. Window capture is now accepted on real Mercury, with
+perfect boot-black circle alignment and no perceptible preview latency reported
+by the user. Streaming video to iOS remains the next milestone; use the
+PC display for gameplay until that path is implemented and validated.
 
 - [Implementation plan and remaining milestones](docs/PLAN.md)
 - [Next milestone: input latency, then video](docs/NEXT-STEPS.md)
 - [Control protocol](docs/PROTOCOL.md)
 - [Validation results and hardware checks still needed](docs/VALIDATION.md)
 - [Optional MercuryIO backend and iPad LEDs](docs/HOOK-IO.md)
+- [Window capture preview, fixture, and calibration](docs/CAPTURE-USAGE.md)
 
 ## Build and test Windows
 
@@ -167,6 +172,11 @@ provenance has not been recorded here; see the validation report for the scope
 of the confirmed hardware results.
 
 ## Layout
+
+Windows window capture now has a standalone GPU preview and animated test
+fixture, including toucca-reference and boot-black circle calibration. Build,
+run, and profile instructions are in [CAPTURE-USAGE.md](docs/CAPTURE-USAGE.md).
+It is separate from the input host; iOS video streaming is a later milestone.
 
 ```text
 src/Brokencca.Core       Framing, sessions, touch geometry, serial packet encoding

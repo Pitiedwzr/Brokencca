@@ -148,10 +148,16 @@ need a user test build before this gate can be marked passed.
 
 ## Step 5 — Resume the video plan
 
-After the input gate, proceed in independently testable stages:
+The standalone capture proof in [WINDOW-CAPTURE.md](WINDOW-CAPTURE.md) is complete
+and accepted on real Mercury (2026-10-02). The development device has no runnable
+Mercury; the user's game-PC log/profile and visual test complete that check.
+The next implementation stage is encoded video over USB. Combined gameplay/video
+acceptance still requires the input gate. Stages:
 
-1. **Windows capture preview:** select Mercury HWND, implement accurate crop/DPI
-   handling, capture at 60 fps, and measure input with capture off/on.
+1. **Windows capture preview — complete:** explicit HWND or Mercury-title discovery,
+   measured crop/DPI handling, bounded WGC/D3D11 capture targeting 60 fps, and
+   local fixture validation. Real Mercury boot-black calibration and preview
+   are accepted; compare input with capture off/on during video integration.
 2. **Encoded video over USB:** hardware H.264, separate video connection, bounded
    queues, VideoToolbox decoding, and Metal presentation on iOS. Keep touch
    feedback local and keep the game/controller coordinate transform consistent.
@@ -169,7 +175,8 @@ remain later work unless measurements reveal a direct dependency.
 2. Measured Windows worker/logging/lock fixes (keep protocol v1 where possible).
 3. iOS scheduling/drawing and overload-policy changes only as evidence requires.
 4. Hardware regression report and input revision acceptance.
-5. Window capture proof, then the first 60 fps video stream.
+5. Window capture proof (complete), then the first 60 fps video stream;
+   combined acceptance follows the input gate.
 
 The plan intentionally defers scheduling changes until the diagnostic baseline.
 
@@ -207,7 +214,9 @@ Automated build/regressions pass; Step 4 hardware acceptance is **pending**.
 Next: replace only the Windows host, repeat the same ten-finger stress for at
 least 60 seconds, press/release/repress, and 30-minute play in one logged game
 launch. Also check held-touch resets and game restart. No IPA update is needed
-for this host-only fix. Do not add lossy scheduling or video until this retest.
+for this host-only fix. Do not add lossy input scheduling or accept combined
+gameplay video until this retest; standalone capture development is covered by
+the separate local/Mercury gates in [WINDOW-CAPTURE.md](WINDOW-CAPTURE.md).
 
 User update 2026-10-02: a brief pressure test with the revised serial worker
 reported no overflow; no log/full-duration test yet, so acceptance stays pending.
@@ -219,6 +228,22 @@ a bounded transition FIFO and reset generations; LEDs have separate IPC/USB
 queues and require an updated IPA for display. A configurable callback cap and
 the fork's downstream UART buffer limits still require game-visible edge tests.
 See [HOOK-IO.md](HOOK-IO.md). This does not unblock video acceptance by itself.
+
+Window capture implementation, 2026-10-02: the standalone Windows library,
+preview, and D3D11 fixture are implemented independently of the input host.
+Explicit HWND/Mercury-title selection, measured client/DPI crop, bounded owned
+textures, GPU aspect-fit/guide rendering, resize/minimize recovery, and bounded
+device-loss retries are available. Calibration can use toucca's placement
+reference or the user's reported black boot exterior; suggestions require
+guide review and explicit profile saving. See [CAPTURE-USAGE.md](CAPTURE-USAGE.md)
+and [VALIDATION.md](VALIDATION.md).
+
+Window capture acceptance, 2026-10-02: the user reports perfect alignment using
+boot-black circle detection and no perceptible preview latency on real Mercury.
+Reviewed `log/capture.log` and the confirmed `log/capture-profile.json`, which
+matches the three agreed detections for a `1080x1920`, `144 DPI` client on the
+RX 6650 XT. Milestone 2 is complete. H.264/USB/iOS video is the next implementation
+milestone; combined input/video acceptance remains a separate integration gate.
 
 Reference: Microsoft's [Thread.Sleep documentation](https://learn.microsoft.com/en-us/dotnet/api/system.threading.thread.sleep)
 explains that the requested timeout depends on clock resolution; it is not a

@@ -6,7 +6,10 @@ iOS: Objective-C. Xcode compilation is delegated to GitHub Actions on macOS.
 Current status: the user has validated installation, USB/multitouch, serial game
 communication, and actual gameplay. Milestone 1 is accepted as a prototype on
 the tested setup. Load-dependent latency and overload recovery are now the
-priority. See [NEXT-STEPS.md](NEXT-STEPS.md) for the immediate execution plan and
+priority for combined gameplay/video validation. Milestone 2 window capture is
+complete and accepted on the user's Mercury setup (2026-10-02); hardware H.264
+and USB/iOS video are the next implementation milestone.
+See [NEXT-STEPS.md](NEXT-STEPS.md) for the immediate execution plan and
 [VALIDATION.md](VALIDATION.md) for the reported evidence.
 
 ## Goal
@@ -146,17 +149,37 @@ cap is experimental because downstream game buffers/polling remain finite.
 Actual hook/LED hardware acceptance and iOS compilation are pending. See
 [HOOK-IO.md](HOOK-IO.md) for configuration, scope, and a serial/hook comparison.
 
-## Milestone 2: window capture proof (after input stabilization)
+## Milestone 2: window capture proof (complete)
 
-Expose/find the Mercury HWND (and allow explicit window selection). Replace
-toucca's heuristic window offsets with measured client bounds, DPI awareness,
-and a configurable crop. Capture the game window, not the transparent controller
-overlay. Start with borderless/windowed mode and test fullscreen separately.
+The implementation-ready scope, coordinate/resource contracts, test matrix, and
+acceptance gates are in [WINDOW-CAPTURE.md](WINDOW-CAPTURE.md), reviewed against
+the local toucca source on 2026-10-02. The standalone WGC/D3D11 library, preview,
+and animated fixture are implemented; see [CAPTURE-USAGE.md](CAPTURE-USAGE.md)
+for commands and [VALIDATION.md](VALIDATION.md) for local and real-Mercury evidence.
 
-Use Windows Graphics Capture `CreateForWindow` and `CreateFreeThreaded` with
-D3D11 textures. Handle window closure, resize, minimized/occluded behavior,
-GPU device loss, and frame pool recreation. Measure capture timing before
-introducing USB/video. Keep CPU pixel copies out of the steady-state path.
+Accepted by the user on 2026-10-02 after testing real Mercury on the RX 6650 XT
+game PC: boot-black calibration aligns perfectly and the preview has no
+perceptible latency. The supplied capture log and confirmed profile establish
+the tested `1080x1920` client at `144 DPI`. This closes the window-capture
+milestone; quantitative latency and additional compatibility coverage are
+recorded separately in the validation report.
+
+This device has no runnable Mercury. The standalone library, local preview, and
+animated fixture provide the local proof. Toucca supplies a
+window-title discovery hint and overlay geometry reference, not capture code;
+its `-10`/`0.938` adjustments are not a validated video crop. The user reports
+that the placed overlay's outer ring approximately matches Mercury's outer
+ring; preserve that as the initial playfield center/radius calibration reference.
+The reported black boot background also supports an optional conservative
+circle-fit suggestion, checked by the user before saving a profile.
+The implementation uses explicit HWND selection, measured client/DPI bounds,
+configurable crop, bounded GPU ownership, and lifecycle recovery, with CPU pixel
+copies restricted to optional diagnostics/calibration.
+
+Local fixture proof and real Mercury crop/rendering compatibility are complete
+for the tested setup. Combined capture/input performance remains part of the
+game-PC input/video acceptance gate. Exclusive fullscreen and other untested
+rendering/hardware combinations remain additional compatibility coverage.
 
 ## Milestone 3: H.264 stream at 60 fps
 
@@ -212,8 +235,10 @@ The iOS artifact requires external signing/provisioning before installation.
 The workflow does not supply signing credentials or demonstrate device behavior.
 XcodeGen generates the Xcode project from `ios/project.yml`; iOS 15 is the current
 prototype deployment minimum. The tested setup is an iPad mini (5th generation)
-and AMD RX6650 XT game PC. Capture resolution, video throughput, and end-to-end
-touch-to-game/display latency remain unmeasured.
+and AMD RX6650 XT game PC. Local fixture capture has been measured on the
+development laptop, and real Mercury capture has been accepted on the game PC
+with a supplied diagnostic log/profile. Sustained unique-game-frame throughput
+and end-to-end touch-to-game/display latency remain unmeasured.
 
 ## References
 

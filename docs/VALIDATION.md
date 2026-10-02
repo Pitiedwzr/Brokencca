@@ -1,5 +1,121 @@
 # Implementation validation
 
+## Mercury window capture acceptance, 2026-10-02
+
+**Milestone 2 is complete and accepted on the user's tested game PC.** The user
+reports that capture works very well, boot-black circle detection aligns
+perfectly, and the preview has no perceptible latency relative to the real
+window. This is visual, user-reported acceptance, not a measured zero-latency
+claim. The development device still has no runnable Mercury; the game-PC test
+completes the real-game compatibility check after the local fixture proof.
+
+Reviewed supplied evidence: `log/capture.log` and `log/capture-profile.json`.
+These local files retain the original run and confirmed calibration.
+
+| Check | Evidence |
+| --- | --- |
+| Build and machine | `0.2.0-capture-proof+78944fbd39cdb54649548ba7ee000437a6bc3cf1`; Windows `10.0.26200`; AMD Radeon RX 6650 XT |
+| Real source | HWND `0x150E60`, PID `6536`, class `UnrealWindow`, title `Mercury  ` (two trailing spaces) |
+| Capture geometry | Client `1080x1920`, `144 DPI` (150%); WGC item `1084x1967`; measured client offset `(2,45)` removes the window frame/titlebar |
+| Boot-black calibration | Three identical detections, consensus reached on sample 3; confidence `0.96826`, boundary error `0.00397`; confirmed saved profile matches the detections |
+| Profile | Version 1, full client crop `(0,0,1,1)`, center `(0.5007567,0.4708033)`, radius `0.4893998 * min(width,height)`, provenance `black-background`, `Confirmed: true` |
+| Circle in client pixels | Center approximately `(540.82,903.94)`, radius `528.55`; user reports perfect alignment |
+| Bounded capture and lifecycle | 59 state-bearing diagnostic reports, including 58 Running and a final normal `Stopped/source-closed`; maximum sampled pending depth 1, zero slot-capacity drops, zero faults/recovery attempts; window movement reflected through geometry generation 16 |
+| Session totals | 3,462 arrivals, 3,429 submissions, 3,386 presentations; 11 busy-callback drops, 30 rate drops, 31 replaced pending frames |
+
+Performance observations are retained without treating this short interactive
+run as a sustained benchmark. Excluding the first 10 state-bearing reports,
+49 reports average **58.01 presentations/s**, below the provisional 59/s
+benchmark target. There is one stale report (last-frame age `770.707 ms`,
+`13.98` presentations/s); its cause is not established by the log. Capture
+subsequently resumes, and the final source closure is normal. These observations
+do not change the user's functional acceptance of the tested capture setup.
+
+The maximum reported rolling-window timing p95 after warmup is `5.676 ms`.
+Most timing reports are zero; the implementation clamps negative timestamp
+differences to zero, so they do not establish zero visible latency. Quantitative
+latency and sustained unique-frame throughput remain measurements for the video
+milestones. The ten-minute fixture benchmark below is separate evidence.
+
+Next implementation milestone: hardware H.264/NV12, separate USB video framing,
+and iOS decode/Metal presentation. Combined input/video stress and additional
+hardware/rendering combinations remain part of that integration's validation.
+
+## Local window capture proof, 2026-10-02
+
+Implemented a standalone C#/WinRT WGC/D3D11 capture library, WinForms GPU
+preview, and separate procedural D3D11 fixture. The input host, native IO DLL,
+wire protocol, and iOS app were not changed for capture. The preview uses three
+owned textures, one latest pending frame, disposable consumer leases, event
+queries for reuse, GPU crop/aspect-fit/guide rendering, and explicit lifecycle
+states. CPU readback is opt-in for pixel tests and boot-circle calibration.
+See [CAPTURE-USAGE.md](CAPTURE-USAGE.md) for runnable commands.
+
+Test environment: Windows `10.0.26200`, .NET SDK `8.0.425`, AMD Radeon(TM)
+Graphics development laptop, desktop `2560x1600` at reported `120 Hz`, and
+PerMonitorV2 source/preview at `144 DPI` (150%). Fixture client `1280x720` SDR.
+This is **not** the user's RX6650 XT Mercury machine. No runnable Mercury or
+iOS video was used in these checks.
+
+| Check | Result |
+| --- | --- |
+| Release solution build | Passed, zero warnings/errors |
+| C# regression runner including native hook DLL | 34/34 passed; new coverage includes crop/transform/profile rejection, bounded slot ownership, boot-black fitting/consensus, and bounded device recovery |
+| Self-contained Windows x64 preview/fixture publish | Passed; package under `artifacts/windows-capture` |
+| Decorated client crop at 150% DPI | Four corner color markers passed; final packaged smoke additionally checks all four one-pixel client edges |
+| Borderless resize/minimize/restore | 20 resize cycles with periodic minimize/restore; 20 frame-pool recreations, no fault/deadlock, client marker checks passed across observed stable generations |
+| Complete start/stop | 20 complete device/session/presenter cycles passed |
+| Boot-black calibration | Three consistent samples recovered fixture center `(0.54074, 0.47149)` and radius `0.38837 * min(client width,height)`, against fixture `(0.54,0.47,0.39)`; confidence about 0.965; result remains a suggestion requiring confirmation |
+| Calibration rejection | Regression coverage for all-black, rectangles, ellipses, clipped/small circles, changing observations; a continuous large outer ring is also accepted |
+| Device-loss recovery | Injected `DXGI_ERROR_DEVICE_REMOVED` rebuilt the entire GPU/session/presenter and resumed verified boot calibration; this is simulation, not a physical GPU reset |
+| Slow consumer | Explicit 250 ms stall passed; next acquired frame age 9.63 ms in the packaged check, latest pending depth stayed bounded, and normal presentation resumed |
+| Input replay, capture off/on | Same 480/s, 10-second `all` workload: 4,797 diagnostic frames in each case, zero sequence gaps/queue overflows; quiet dry-run only, not USB/serial/game acceptance |
+| Ten-minute GPU capture soak | Passed provisional average-rate and rolling timing gates; details below |
+
+The long published-executable run lasted about 610 seconds and emitted 609
+diagnostic reports plus a successful smoke result (36,223 presentations total).
+The first 10 reports were excluded from the steady-state summary. The source
+rendered approximately 60 presentations/s. The preview averaged **59.49
+presentations/s** across 599 steady reports; the slowest one-second window was
+**43.99/s**, so this does not establish perfectly uniform 60 fps delivery.
+
+Median of reported rolling 120-frame timing p95 values: **0.370 ms**; maximum
+reported rolling p95: **15.820 ms**, below the provisional 33.3 ms gate. These
+are overlapping rolling-window summaries, **not** a pooled session p95 or
+capture-to-visible-display measurement. Arrival/submission/presentation counts
+do not independently establish unique rendered game images.
+
+In the steady comparison span: 35,743 submissions, 35,600 presentations,
+159 rate drops, 173 skipped busy callbacks, 142 replaced pending frames, and
+zero slot-capacity drops. Maximum sampled pending depth was one; no capture
+faults or stale reporting windows were recorded. Working set started at
+139.69 MiB and ended at 22.75 MiB, with range 7.69..148.81 MiB; there was no
+growing working-set trend. This is process working set, not a VRAM/leak proof.
+The input-on replay and regression suite ran during the soak, so it includes
+some concurrent CPU work rather than a fully isolated benchmark.
+
+Reproducible logs: `artifacts/capture-soak`, `capture-smoke-boot`,
+`capture-smoke-lifecycle`, `capture-smoke-recovery`, `capture-smoke-start-stop`,
+`capture-smoke-slow-final`, and `capture-input-off`/`capture-input-on`.
+Summarize the soak with `scripts/analyze-capture-log.ps1`. The soak's original
+run metadata reported assembly version `0.2.0.0`; the final tools use the
+distinct `0.2.0-capture-proof` informational label. Final packaged checks passed
+for one-pixel edges and boot calibration with simulated device recovery after
+the documentation/calibration-guard updates (`capture-smoke-final-edges` and
+`capture-smoke-final-boot`).
+
+Additional coverage: exclusive fullscreen, HDR/tone mapping, physical device reset, other DPI levels,
+mixed-DPI/negative-coordinate monitor configurations, multi-GPU behavior, and
+game-PC input timing with capture off/on. These combinations were not established
+by the local fixture or the supplied Mercury run. Real Mercury crop/circle
+alignment and boot-black calibration are accepted above. CI builds and
+runs deterministic tests but has not been invoked/reviewed for this revision;
+interactive GPU acceptance is not implied by a hosted CI build.
+
+Status: **local window capture proof complete; Mercury acceptance recorded above**.
+H.264/NV12, USB video framing, iOS decode/Metal presentation, and end-to-end
+video latency are Milestone 3 and remain unimplemented.
+
 ## User-reported hardware acceptance
 
 The user has tested the prototype and considers it suitable as a prototype release.
@@ -199,7 +315,9 @@ sequence is `[0]`, `[]`, `[0]`, `[]`. The host remains alive awaiting reconnecti
   preservation/game sampling of very short taps **after the worker fix**.
   The baseline now identifies the host FIFO as the overflow source; hardware
   confirmation of the fix and end-to-end game latency remain outstanding.
-- Capture, encoding, video streaming, or audio: not implemented in this milestone.
+- Window capture is implemented, fixture-tested, and accepted on the user's
+  Mercury setup as reported above; encoding, iOS video streaming, and audio
+  remain pending.
 
 The automated checks establish behavior under simulation; the user's device and
 game tests additionally establish practical compatibility on their setup. Neither
