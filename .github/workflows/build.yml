@@ -16,8 +16,6 @@ jobs:
       - name: Build and run regression suite
         shell: pwsh
         run: ./scripts/build.ps1
-      - name: Publish self-contained host
-        run: dotnet publish src/Brokencca.Host -c Release -r win-x64 --self-contained true -o artifacts/windows
       - name: Publish self-contained capture preview and fixture
         shell: pwsh
         run: ./scripts/publish-capture.ps1
@@ -34,6 +32,9 @@ jobs:
             -Compiler gcc.exe `
             -OutputDirectory artifacts/windows `
             -Test
+      - name: Publish host, video probe and hardware encoder DLL
+        shell: pwsh
+        run: ./scripts/publish-video.ps1 -Compiler g++.exe -OutputDirectory artifacts/windows
       - name: Smoke test published host
         shell: pwsh
         run: ./scripts/smoke-test.ps1
@@ -41,7 +42,7 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item README.md,LICENSE,NOTICE artifacts/windows
-          Copy-Item docs artifacts/windows/docs -Recurse
+          if (-not (Test-Path artifacts/windows/brokencca-video.dll)) { throw 'Video DLL missing from host package.' }
       - uses: actions/upload-artifact@v4
         with:
           name: Brokencca-Windows-x64
@@ -69,6 +70,12 @@ jobs:
           xcodebuild -project ios/Brokencca.xcodeproj -scheme Brokencca \
             -configuration Release -destination 'generic/platform=iOS' \
             -derivedDataPath ios/build CODE_SIGNING_ALLOWED=NO build
+      - name: Verify iOS deployment target and packaged executable
+        run: |
+          APP=ios/build/Build/Products/Release-iphoneos/Brokencca.app
+          test -f "$APP/Brokencca"
+          /usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist"
+          xcrun dwarfdump --uuid "$APP/Brokencca"
       - name: Package unsigned IPA (requires signing before installation)
         run: |
           mkdir -p artifacts/Payload
