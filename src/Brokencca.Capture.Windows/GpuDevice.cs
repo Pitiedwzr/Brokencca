@@ -14,9 +14,10 @@ public sealed class GpuDevice : IDisposable
     public ID3D11DeviceContext Context { get; }
     public string Adapter { get; }
     private bool disposed;
-    public GpuDevice()
+    public GpuDevice(bool videoSupport = false)
     {
-        D3D11CreateDevice(null, DriverType.Hardware, DeviceCreationFlags.BgraSupport, [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0], out ID3D11Device device, out ID3D11DeviceContext context).CheckError();
+        var flags = DeviceCreationFlags.BgraSupport | (videoSupport ? DeviceCreationFlags.VideoSupport : 0);
+        D3D11CreateDevice(null, DriverType.Hardware, flags, [FeatureLevel.Level_11_1, FeatureLevel.Level_11_0], out ID3D11Device device, out ID3D11DeviceContext context).CheckError();
         Device = device!; Context = context!;
         try
         {
