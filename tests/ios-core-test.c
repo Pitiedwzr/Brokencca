@@ -92,6 +92,12 @@ static void test_video_schedule(void) {
     assert(s.gpu==0 && s.presenting==0);
     assert(!BCVideoBeginRefreshRender(&s,true,s.lastRefreshUs)); // callbacks can't reuse the previous refresh
     assert(!BCVideoBeginRefreshRender(&s,true,s.lastRefreshUs-1)); // stale refresh
+    BCVideoRenderSnapshot snapshot={1,2,3};
+    assert(BCVideoRenderSnapshotCurrent(snapshot,1,2,3));
+    assert(!BCVideoRenderSnapshotCurrent(snapshot,0,2,3)); // disconnected while acquiring a drawable
+    assert(!BCVideoRenderSnapshotCurrent(snapshot,2,2,3)); // new generation
+    assert(!BCVideoRenderSnapshotCurrent(snapshot,1,4,3)); // reconnect reuses generation number
+    assert(!BCVideoRenderSnapshotCurrent(snapshot,1,2,4)); // rotate/zoom while rendering or awaiting UI publication
     const char *hello="{\"sessionToken\":\"00000000000000000000000000000000\",\"videoVersion\":1}";
     const char *timed="{\"sessionToken\":\"00000000000000000000000000000000\",\"videoVersion\":1,\"frameTiming\":true}";
     const char *duplicate="{\"sessionToken\":\"x\",\"videoVersion\":1,\"frameTiming\":true,\"frameTiming\":false}";

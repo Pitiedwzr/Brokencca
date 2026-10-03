@@ -390,6 +390,36 @@ of decoded frames are still replaced before presentation; display callback
 cadence alone is not sustained unique-frame acceptance. The logs establish that
 the drawable stall is removed, but do not time the rest of the pipeline.
 
+The build-9 baseline-2 and actual track-playing logs have no video failures,
+stay in generation 1 at 10 Mbps, and establish that the idle/resume watchdog fix
+holds in these runs. Track playing lasts about 230 seconds; input peaks at
+80.1 messages/s, with no sequence gaps or queue overflows and no new hook
+watchdog resets. Sampled receive-to-hook maximum is 9.063 ms. Thermal state stays
+nominal. Baseline acquisition-to-presentation median/p95 are 46.119/52.862 ms;
+playing values are 40.909/52.453 ms. Playing replaces 3,318/13,530 decoded
+frames (24.5%). Distinct presentation timestamps average 27.1/s baseline and
+38.9/s playing over the entire recordings, including source inactivity.
+
+The main-thread presentation change did not resolve grouping: targets remain
+distinct but actual presentation timestamps coincide. In playing, approximately
+75% of reported presentations miss their target by one refresh. Frames missing
+the target start rendering a median 7.969 ms after the reference refresh; on-time
+frames start after 0.103 ms. GPU work remains around 0.8 ms. This points toward
+callback scheduling/compositor deadlines, without proving a hardware limit.
+
+Build 10 isolates the display link and Metal rendering on a dedicated run-loop
+thread. UI state crosses through a locked snapshot; stale layout/renderer
+notifications are rejected, and geometry callbacks stay on main. It retains
+the target-time and once-per-refresh policy to measure thread scheduling as a
+separate change. Diagnostic logs add callback entry and a main-thread flag;
+the analyzer reports callback scheduling intervals and render-thread counts,
+retaining older log compatibility. Local 38/38 regressions and portable C
+checks pass, including snapshot retirement and diagnostic timing. GitHub Actions
+compiles the new render-loop sources as part of the iOS app. Xcode compilation,
+startup/pause/resume/shutdown runtime checks and iPad presentation confirmation
+remain pending from this Windows workspace. A macOS standalone lifecycle harness
+is not used because its display-link creation API differs from the iOS path.
+
 The real-game baseline (RX 6650 XT, portrait 720x1280, iPad mini 5, input hook
 and LEDs enabled) covers about 46 seconds and 2,571 matched traces. Acquisition
 to presentation is 36.271 ms median / 53.034 ms p95; conversion/encoding is

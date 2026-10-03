@@ -120,20 +120,28 @@ wait/GPU timings and photographed frame differences, including the first startup
 
 ## Presentation scheduling and per-frame timing
 
-IPA build 9 selects the newest decoded buffer synchronously in each 60 Hz
+IPA build 10 selects the newest decoded buffer synchronously in each 60 Hz
 CADisplayLink callback and admits at most one render for that refresh. It requests
 presentation at the callback's `targetTimestamp`; decode and Metal completion
 callbacks mark pending work without submitting extra draws between refreshes. At most two
 drawables await presentation and at most two submissions await GPU completion;
-the three-drawable pool and per-frame autorelease pool remain. Zoom, static redraws and touch geometry still use the
-same main-thread renderer. The scheduling change requires a device comparison;
+the three-drawable pool and per-frame autorelease pool remain. A dedicated
+`Brokencca.VideoRender` thread owns the display link, run loop, drawable acquisition,
+texture cache use and Metal submissions. UIKit provides a locked snapshot of
+bounds/scale/zoom; touch/LED geometry callbacks return asynchronously to the main
+thread and reject old renderer/layout revisions. Pause/resume and shutdown run
+on the render loop without waiting on the UI thread. Zoom and static rotation
+redraws retain the shared video/touch geometry. The change requires a device comparison;
 no new latency improvement is claimed from the local build alone.
 Build 7's single pending-presentation limit reduced actual new-frame presentation
 to about 30 fps on the fixture iPad despite a 60 Hz display link. Build 8 allows
 the next drawable to be submitted while the previous one waits for presentation.
 The game baseline then exposed multiple callbacks sharing a presentation timestamp.
-Build 9 aligns requests with display refreshes to address that grouping. This
-requires device verification; callback counts alone do not prove distinct visible
+Build 9's main-thread display callbacks still missed targets and grouped frames
+in the baseline-2 / playing logs. Build 10 retains the one-render-per-refresh
+and target-time policy, isolating thread scheduling as the next experiment. It
+does not remove the display-callback wait; if callback timing improves but latency
+does not, a separate pacing experiment can then be assessed. Callback counts alone do not prove distinct visible
 screen updates. iOS 15 remains supported; CAMetalDisplayLink/iOS 17 is not required.
 Retest stream/control reconnects, pause/resume and a static source mode switch;
 geometry is republished on a new renderer session even with identical calibration.
@@ -154,6 +162,14 @@ counts, distinct presentation timestamps, additional frames sharing a timestamp,
 and the rate of distinct timestamps. These are reported presentation events;
 continue camera checks to establish actual visible frame changes. Older logs
 remain readable, with missing target measurements left blank.
+Build 10 adds `callback_us` and `render_on_main_thread`. The analyzer reports
+`refresh_to_callback`, `callback_to_render` and `refresh_to_render` durations and
+counts rendered frames on/off the main thread (older logs report unknown).
+These scheduling intervals overlap the existing pipeline stages and must not
+be added to the end-to-end latency. Compare callback delay, target misses,
+distinct presentation timestamps, replacements and acquisition-to-presentation
+latency against the build-9 playing run. Also retest touch/LED alignment through
+zoom, rotation, disconnect/reconnect and background/foreground transitions.
 Join them by video generation and frame ID with the packaged analyzer:
 
 ```powershell

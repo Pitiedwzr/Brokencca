@@ -4,7 +4,7 @@ namespace Brokencca.Core;
 
 public sealed record VideoTimingResult(ulong Generation, ulong FrameId, string Outcome, bool Bootstrap, bool Redraw,
     bool Valid, bool CaptureTimestampOrdered, double? ClockUncertaintyMs, double? ClockSampleAgeMs, Dictionary<string, double?> DurationsMs,
-    long PresentedUs, long TargetPresentUs, long RefreshUs);
+    long PresentedUs, long TargetPresentUs, long RefreshUs, long CallbackUs, bool? RenderOnMainThread);
 
 public sealed record VideoPresentationCadence(ulong Generation, int Presentations, int DistinctPresentationTimes,
     int SameTimestampAdditionalFrames, double ElapsedSeconds, double? DistinctTimesPerSecond);
@@ -15,7 +15,8 @@ public static class VideoTimingAnalyzer
 {
     public static readonly string[] StageNames = ["capture_to_acquire", "acquire_to_submit", "convert_encode",
         "encoded_queue", "socket_write", "send_to_receive", "decode_queue", "decode", "decode_dispatch",
-        "ready_to_render", "render_cpu", "gpu_queue", "gpu", "gpu_to_present", "receive_to_present", "capture_to_present", "acquire_to_present", "target_to_present"];
+        "ready_to_render", "render_cpu", "gpu_queue", "gpu", "gpu_to_present", "receive_to_present", "capture_to_present", "acquire_to_present", "target_to_present",
+        "refresh_to_render", "refresh_to_callback", "callback_to_render"];
 
     public static IEnumerable<JsonElement> ReadRecords(IEnumerable<string> lines)
     {
@@ -67,6 +68,13 @@ public static class VideoTimingAnalyzer
         bool presented = outcome == "presented" && Timestamp(ios, "presented_us") > 0;
         long target = ios.TryGetProperty("target_present_us", out _) ? Timestamp(ios,"target_present_us") : 0;
         long refresh = ios.TryGetProperty("refresh_us", out _) ? Timestamp(ios,"refresh_us") : 0;
+        long callback = ios.TryGetProperty("callback_us", out _) ? Timestamp(ios,"callback_us") : 0;
+        bool? renderOnMain = ios.TryGetProperty("render_on_main_thread", out var main) ? main.GetBoolean() : null;
+        if (refresh > 0) Local("refresh_to_render",ios,"refresh_us","render_started_us");
+        if (callback > 0) {
+            if (refresh > 0) Local("refresh_to_callback",ios,"refresh_us","callback_us");
+            Local("callback_to_render",ios,"callback_us","render_started_us");
+        }
         if (presented) {
             Local("gpu_to_present", ios, "gpu_ended_us", "presented_us");
             Local("receive_to_present", ios, "received_us", "presented_us");
@@ -93,7 +101,7 @@ public static class VideoTimingAnalyzer
             }
         }
         return new(generation, frame, outcome, host.GetProperty("bootstrap").GetBoolean(), ios.GetProperty("redraw").GetBoolean(),
-            valid, captureOrdered, uncertaintyMs, clockAgeMs, stages, Timestamp(ios,"presented_us"), target, refresh);
+            valid, captureOrdered, uncertaintyMs, clockAgeMs, stages, Timestamp(ios,"presented_us"), target, refresh, callback, renderOnMain);
     }
 
     public static VideoPresentationCadence[] PresentationCadence(IEnumerable<VideoTimingResult> results) => results

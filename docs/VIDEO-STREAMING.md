@@ -348,12 +348,23 @@ do not convert frames via UIImage, CGImage, CPU RGBA, or per-frame texture uploa
 See [Core Video's Metal texture cache](https://developer.apple.com/documentation/corevideo/cvmetaltexturecache-q3j).
 
 Use one CADisplayLink at preferred 60 Hz, in common run-loop modes; do not add a
-second independent timer. As of IPA build 9, render the newest ready buffer
+second independent timer. As of IPA build 10, the display link and render loop
+run on a dedicated user-interactive NSThread. UIKit publishes locked bounds,
+scale and zoom snapshots; drawable acquisition, texture-cache use and command
+submission occur on that thread. Geometry callbacks dispatch asynchronously to
+the main queue and validate generation, renderer and layout revisions. Pause
+and stop wake the render loop without blocking the UI; a keep-alive port prevents
+spinning while paused, and shutdown releases thread/display-link ownership.
+Render the newest ready buffer
 synchronously once per display callback, targeting `link.targetTimestamp` with
 `presentDrawable:atTime:`. Decode and Metal callbacks mark work pending but do
 not independently submit a drawable. A refresh timestamp guard rejects duplicate
 or stale refresh submissions. Record refresh/target/actual presentation times
 and count distinct presentation timestamps separately from callback counts.
+Record callback entry separately and report whether rendering ran on the main
+thread. Keep the display-callback wait in build 10 to isolate thread scheduling
+from presentation-policy changes; verify actual target misses and distinct
+presentation timestamps on a device before claiming any performance benefit.
 As of build 8 allow two unpresented drawables, freeing each slot at actual presentation
 (or GPU failure), independently of the two GPU submission slots. Callback order
 is unspecified, so each submission owns a ticket and releases each slot once.

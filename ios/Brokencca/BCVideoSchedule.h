@@ -7,6 +7,13 @@
 // Presentation can take two refresh intervals; one pending drawable halves fps.
 typedef struct { bool queued, paused; unsigned gpu, presenting; uint64_t lastRefreshUs; } BCVideoSchedule;
 typedef struct { bool gpuFinished, presentationFinished; } BCVideoRenderTicket;
+typedef struct { uint64_t generation, rendererRevision, layoutRevision; } BCVideoRenderSnapshot;
+
+static inline bool BCVideoRenderSnapshotCurrent(BCVideoRenderSnapshot snapshot,
+    uint64_t generation, uint64_t rendererRevision, uint64_t layoutRevision) {
+    return snapshot.generation && snapshot.generation==generation &&
+        snapshot.rendererRevision==rendererRevision && snapshot.layoutRevision==layoutRevision;
+}
 
 static inline bool BCVideoRequestRender(BCVideoSchedule *s, bool ready) {
     if (!ready || s->paused || s->queued || s->gpu>=2 || s->presenting>=2) return false;

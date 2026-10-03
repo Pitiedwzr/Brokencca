@@ -74,6 +74,15 @@ internal static class VideoTimingTests
         Check(targetResult.Valid && targetResult.TargetPresentUs==1416000 && targetResult.RefreshUs==1399333);
         Near(targetResult.DurationsMs["target_to_present"],.667);
         Check(result.DurationsMs["target_to_present"] is null); // pre-build-9 logs remain readable
+        Near(targetResult.DurationsMs["refresh_to_render"],14.667);
+        var isolated = Json(targeted.GetRawText().Replace("\"refresh_us\":1399333", "\"refresh_us\":1399333,\"callback_us\":1413800,\"render_on_main_thread\":false"));
+        var isolatedResult = VideoTimingAnalyzer.Analyze(host,isolated,clock);
+        Check(isolatedResult.Valid && isolatedResult.RenderOnMainThread==false && isolatedResult.CallbackUs==1413800);
+        Near(isolatedResult.DurationsMs["refresh_to_callback"],14.467);
+        Near(isolatedResult.DurationsMs["callback_to_render"],.2);
+        Check(targetResult.RenderOnMainThread is null && targetResult.DurationsMs["refresh_to_callback"] is null);
+        var mainThread = Json(isolated.GetRawText().Replace("\"render_on_main_thread\":false", "\"render_on_main_thread\":true"));
+        Check(VideoTimingAnalyzer.Analyze(host,mainThread,clock).RenderOnMainThread==true);
         var cadence = VideoTimingAnalyzer.PresentationCadence([
             result, result with { FrameId=11 }, // two frames reported at the same presentation time
             result with { FrameId=12,PresentedUs=result.PresentedUs+16667 },
