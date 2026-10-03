@@ -50,8 +50,13 @@ static void test_video_schedule(void) {
     for (int i=0;i<1000;i++) assert(!BCVideoRequestRender(&s,true)); // coalesced burst
     assert(BCVideoBeginRender(&s,true)); assert(s.gpu==1 && s.presenting==1 && !s.queued);
     BCVideoGPUFinished(&s,&first,false); // GPU done is not the same as presentation done
-    assert(s.gpu==0 && s.presenting==1 && !BCVideoRequestRender(&s,true));
-    BCVideoPresentationFinished(&s,&first); assert(BCVideoRequestRender(&s,true));
+    assert(s.gpu==0 && s.presenting==1 && BCVideoRequestRender(&s,true));
+    assert(BCVideoBeginRender(&s,true));
+    BCVideoGPUFinished(&s,&second,false);
+    assert(s.gpu==0 && s.presenting==2 && !BCVideoRequestRender(&s,true));
+    BCVideoPresentationFinished(&s,&first); // next refresh can submit while second waits
+    assert(BCVideoRequestRender(&s,true));
+    BCVideoPresentationFinished(&s,&second); second=(BCVideoRenderTicket){0};
     assert(BCVideoBeginRender(&s,true)); first=(BCVideoRenderTicket){0};
     BCVideoPresentationFinished(&s,&first); // callback order can be reversed
     assert(BCVideoRequestRender(&s,true)); assert(BCVideoBeginRender(&s,true));
@@ -70,6 +75,20 @@ static void test_video_schedule(void) {
         BCVideoPresentationFinished(&s,&first); BCVideoGPUFinished(&s,&first,true); // late/duplicate callbacks
         assert(s.gpu==0 && s.presenting==0);
     }
+    // Device trace: presentation takes two refresh intervals. Admit one new
+    // frame each interval while keeping a strict two-drawable bound.
+    BCVideoRenderTicket refresh[2]={{0},{0}};
+    for (int tick=0;tick<120;tick++) {
+        int slot=tick%2;
+        if (tick>=2) BCVideoPresentationFinished(&s,&refresh[slot]);
+        refresh[slot]=(BCVideoRenderTicket){0};
+        assert(BCVideoRequestRender(&s,true)); assert(BCVideoBeginRender(&s,true));
+        BCVideoGPUFinished(&s,&refresh[slot],false);
+        assert(s.gpu==0 && s.presenting==(tick==0 ? 1u : 2u));
+        if (tick>0) assert(!BCVideoRequestRender(&s,true));
+    }
+    BCVideoPresentationFinished(&s,&refresh[0]); BCVideoPresentationFinished(&s,&refresh[1]);
+    assert(s.gpu==0 && s.presenting==0);
     const char *hello="{\"sessionToken\":\"00000000000000000000000000000000\",\"videoVersion\":1}";
     const char *timed="{\"sessionToken\":\"00000000000000000000000000000000\",\"videoVersion\":1,\"frameTiming\":true}";
     const char *duplicate="{\"sessionToken\":\"x\",\"videoVersion\":1,\"frameTiming\":true,\"frameTiming\":false}";

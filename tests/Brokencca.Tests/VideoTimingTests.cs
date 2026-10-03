@@ -18,11 +18,12 @@ internal static class VideoTimingTests
             """);
         var clock = Json("""{"kind":"video_clock","generation":1,"sampled_host_us":1010000,"offset_us":400000,"uncertainty_us":200} """);
         var result = VideoTimingAnalyzer.Analyze(host, ios, clock);
-        Check(result.Valid && result.FrameId == 10 && result.ClockUncertaintyMs == .2);
+        Check(result.Valid && result.CaptureTimestampOrdered && result.FrameId == 10 && result.ClockUncertaintyMs == .2);
+        Near(result.DurationsMs["acquire_to_present"],15.667);
         Near(result.DurationsMs["capture_to_present"],16.667); Near(result.DurationsMs["send_to_receive"],1);
         Near(result.DurationsMs["convert_encode"],5); Near(result.DurationsMs["ready_to_render"],.5);
         Near(result.DurationsMs["gpu"],.8); Near(result.DurationsMs["socket_write"],.4);
-        double sum = VideoTimingAnalyzer.StageNames.Where(n => n is not ("socket_write" or "receive_to_present" or "capture_to_present"))
+        double sum = VideoTimingAnalyzer.StageNames.Where(n => n is not ("socket_write" or "receive_to_present" or "capture_to_present" or "acquire_to_present"))
             .Sum(n => result.DurationsMs[n] ?? 0);
         Near(sum,16.667); // no double-counting CPU/GPU or socket-write overlap
         var unsynced = VideoTimingAnalyzer.Analyze(host,ios,null);
@@ -37,6 +38,14 @@ internal static class VideoTimingTests
         Check(VideoTimingAnalyzer.Analyze(host,redraw,clock).Redraw);
         var invalid = Json(ios.GetRawText().Replace("1413000","1409000"));
         Check(!VideoTimingAnalyzer.Analyze(host,invalid,clock).Valid);
+        // Real WGC logs have compositor timestamps several ms ahead of acquisition.
+        var futureCaptureHost = Json(host.GetRawText().Replace("\"capture_us\":1000000", "\"capture_us\":1004000"));
+        var futureCaptureIos = Json(ios.GetRawText().Replace("\"capture_us\":1000000", "\"capture_us\":1004000"));
+        var futureCapture = VideoTimingAnalyzer.Analyze(futureCaptureHost,futureCaptureIos,clock);
+        Check(futureCapture.Valid && !futureCapture.CaptureTimestampOrdered);
+        Near(futureCapture.DurationsMs["capture_to_acquire"],-3);
+        Near(futureCapture.DurationsMs["acquire_to_present"],15.667);
+        Near(futureCapture.DurationsMs["decode"],3);
         // Signed clock offsets, uncertainty and sub-millisecond negative estimates.
         var uncertain = Json(clock.GetRawText().Replace("400000","401100"));
         var nearZero = VideoTimingAnalyzer.Analyze(host,ios,uncertain);

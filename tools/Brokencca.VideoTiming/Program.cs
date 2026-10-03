@@ -32,23 +32,25 @@ try
     if (args.Length == 6)
     {
         using var csv = new StreamWriter(args[5]);
-        csv.WriteLine("generation,frame_id,outcome,bootstrap,redraw,valid,clock_uncertainty_ms,clock_sample_age_ms," +
+        csv.WriteLine("generation,frame_id,outcome,bootstrap,redraw,valid,capture_timestamp_ordered,clock_uncertainty_ms,clock_sample_age_ms," +
             string.Join(',', VideoTimingAnalyzer.StageNames.Select(n => n + "_ms")));
         string Number(double? value) => value?.ToString("F6", CultureInfo.InvariantCulture) ?? "";
         foreach (var r in results) csv.WriteLine(string.Join(',', new[] {
             r.Generation.ToString(CultureInfo.InvariantCulture), r.FrameId.ToString(CultureInfo.InvariantCulture), r.Outcome,
-            r.Bootstrap.ToString(), r.Redraw.ToString(), r.Valid.ToString(), Number(r.ClockUncertaintyMs), Number(r.ClockSampleAgeMs)
+            r.Bootstrap.ToString(), r.Redraw.ToString(), r.Valid.ToString(), r.CaptureTimestampOrdered.ToString(), Number(r.ClockUncertaintyMs), Number(r.ClockSampleAgeMs)
         }.Concat(VideoTimingAnalyzer.StageNames.Select(n => Number(r.DurationsMs[n])))));
     }
     var steady = results.Where(r => r.Valid && r.Outcome == "presented" && !r.Bootstrap && !r.Redraw).ToArray();
     var stages = VideoTimingAnalyzer.StageNames.ToDictionary(name => name, name => {
-        var values = steady.Select(r => r.DurationsMs[name]).Where(v => v.HasValue).Select(v => v!.Value).Order().ToArray();
+        var values = steady.Where(r => r.CaptureTimestampOrdered || name is not ("capture_to_acquire" or "capture_to_present"))
+            .Select(r => r.DurationsMs[name]).Where(v => v.HasValue).Select(v => v!.Value).Order().ToArray();
         double? Percentile(double p) => values.Length == 0 ? null : values[Math.Max(0, (int)Math.Ceiling(values.Length*p)-1)];
         return new { count = values.Length, median_ms = Percentile(.5), p95_ms = Percentile(.95), max_ms = Percentile(1) };
     });
     Console.WriteLine(JsonSerializer.Serialize(new { kind = "video_timing_summary", matched_frames = matched.Count,
         unmatched_host = hosts.Count-matched.Count, unmatched_ios = unmatchedIos, steady_presentations = steady.Length,
-        replaced = results.Count(r => r.Outcome == "replaced"), invalid = results.Count(r => !r.Valid), stages }, jsonOptions));
+        replaced = results.Count(r => r.Outcome == "replaced"), invalid = results.Count(r => !r.Valid),
+        capture_timestamp_unordered = results.Count(r => !r.CaptureTimestampOrdered), stages }, jsonOptions));
     Console.Error.WriteLine("Cross-device times are clock estimates; socket_write overlaps send_to_receive. Bootstrap/redraw/invalid/dropped frames are excluded from steady presentation summaries. Presentation timestamps do not measure camera-visible pixel response.");
     return 0;
 }

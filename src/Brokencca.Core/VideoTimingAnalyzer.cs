@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace Brokencca.Core;
 
 public sealed record VideoTimingResult(ulong Generation, ulong FrameId, string Outcome, bool Bootstrap, bool Redraw,
-    bool Valid, double? ClockUncertaintyMs, double? ClockSampleAgeMs, Dictionary<string, double?> DurationsMs);
+    bool Valid, bool CaptureTimestampOrdered, double? ClockUncertaintyMs, double? ClockSampleAgeMs, Dictionary<string, double?> DurationsMs);
 
 /// <summary>Correlates one captured frame through its actual Metal presentation.
 /// Cross-device durations are estimates; local durations never require clock synchronization.</summary>
@@ -11,7 +11,7 @@ public static class VideoTimingAnalyzer
 {
     public static readonly string[] StageNames = ["capture_to_acquire", "acquire_to_submit", "convert_encode",
         "encoded_queue", "socket_write", "send_to_receive", "decode_queue", "decode", "decode_dispatch",
-        "ready_to_render", "render_cpu", "gpu_queue", "gpu", "gpu_to_present", "receive_to_present", "capture_to_present"];
+        "ready_to_render", "render_cpu", "gpu_queue", "gpu", "gpu_to_present", "receive_to_present", "capture_to_present", "acquire_to_present"];
 
     public static IEnumerable<JsonElement> ReadRecords(IEnumerable<string> lines)
     {
@@ -43,7 +43,11 @@ public static class VideoTimingAnalyzer
             stages[name] = (b - a) / 1000.0;
             if (b < a) valid = false;
         }
-        Local("capture_to_acquire", host, "capture_us", "acquired_us");
+        // Some compositor timestamps in device logs are ahead of host acquisition.
+        // Preserve that evidence, but do not invalidate independent pipeline stages.
+        long captured = Timestamp(host, "capture_us"), acquired = Timestamp(host, "acquired_us");
+        bool captureOrdered = captured > 0 && acquired > 0 && captured <= acquired;
+        if (captured > 0 && acquired > 0) stages["capture_to_acquire"] = (acquired-captured)/1000.0;
         Local("acquire_to_submit", host, "acquired_us", "submitted_us");
         Local("convert_encode", host, "submitted_us", "encoded_us");
         Local("encoded_queue", host, "encoded_us", "send_started_us");
@@ -73,13 +77,15 @@ public static class VideoTimingAnalyzer
                 uncertaintyMs = uncertainty / 1000;
                 stages["send_to_receive"] = (Timestamp(ios, "received_us") - offset - Timestamp(host, "send_started_us")) / 1000;
                 if (presented) stages["capture_to_present"] = (Timestamp(ios, "presented_us") - offset - Timestamp(host, "capture_us")) / 1000;
+                if (presented && acquired > 0) stages["acquire_to_present"] = (Timestamp(ios, "presented_us") - offset - acquired) / 1000;
                 // Preserve small negative estimates within synchronization uncertainty.
                 // Clamping them to zero would conceal measurement uncertainty.
-                if (stages["send_to_receive"] < -uncertaintyMs || stages["capture_to_present"] < -uncertaintyMs) valid = false;
+                if (stages["send_to_receive"] < -uncertaintyMs || stages["acquire_to_present"] < -uncertaintyMs ||
+                    (captureOrdered && stages["capture_to_present"] < -uncertaintyMs)) valid = false;
             }
         }
         return new(generation, frame, outcome, host.GetProperty("bootstrap").GetBoolean(), ios.GetProperty("redraw").GetBoolean(),
-            valid, uncertaintyMs, clockAgeMs, stages);
+            valid, captureOrdered, uncertaintyMs, clockAgeMs, stages);
     }
 
     public static JsonElement? SelectClock(IEnumerable<JsonElement> samples, ulong generation, long sendStartedUs)

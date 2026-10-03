@@ -262,7 +262,7 @@ depths; normal operation should have close to zero waiting frames.
 | Encoded send | At most two AUs including active send, combined <=4 MiB; oldest enqueue age <=50 ms | Cancel/close video and restart generation; never remove one reference AU and keep its dependents |
 | One socket write | <=100 ms to write a complete framed message | Timeout closes socket even after a partial write; do not continue framing on it |
 | iOS receive/decode | One partial AU plus at most three complete outstanding AUs including VT submissions, <=8 MiB compressed total | Close/recover at IDR if full or complete AU waits >50 ms; no arbitrary compressed-frame dropping |
-| Decoded/render | One latest pending pixel buffer, one retained displayed buffer for rotation, at most one drawable awaiting presentation and two GPU submissions | Coalesce immediate render requests; replace old pending frame, skip drawing if capacity/drawable unavailable; release GPU and presentation ownership separately |
+| Decoded/render | One latest pending pixel buffer, one retained displayed buffer for rotation, at most two drawables awaiting presentation and two GPU submissions | Coalesce immediate render requests; replace old pending frame, skip drawing if capacity/drawable unavailable; release GPU and presentation ownership separately |
 | Feedback accounting | <=32 frame timing entries or 500 ms, whichever first | Missing correlation is reported; 250 ms without forward presentation progress during moving-source streaming triggers recovery |
 
 If a selected encoder requires more buffering than these defaults, stop the
@@ -351,10 +351,13 @@ Use one CADisplayLink at preferred 60 Hz, in common run-loop modes, for fallback
 render requests and cadence measurement; do not add a second independent timer.
 As of IPA build 7, decode callbacks immediately request a coalesced main-thread
 render of the newest ready buffer, removing the wait for the next display tick.
-Allow only one unpresented drawable, freeing its slot at actual presentation
+As of build 8 allow two unpresented drawables, freeing each slot at actual presentation
 (or GPU failure), independently of the two GPU submission slots. Callback order
 is unspecified, so each submission owns a ticket and releases each slot once.
 Keep counts across retired generations until their callbacks release ownership.
+The fixture-3 device trace showed roughly two refresh intervals from GPU completion
+to presentation; build 7's single pending drawable consequently limited output
+to about 30 new frames/s despite 60 Hz display-link callbacks.
 Reuse the last drawable content if no new frame exists and count it as a repeat. Track
 scheduled draw, GPU completion, and drawable presentation separately where
 available; none alone proves glass latency. Low Power Mode, thermal policy, and

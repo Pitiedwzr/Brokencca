@@ -120,14 +120,17 @@ wait/GPU timings and photographed frame differences, including the first startup
 
 ## Presentation scheduling and per-frame timing
 
-IPA build 7 requests rendering as soon as a decoded frame is ready. Requests
-coalesce on the main queue and select the newest pending buffer. At most one
-drawable awaits presentation and at most two submissions await GPU completion;
+IPA build 8 requests rendering as soon as a decoded frame is ready. Requests
+coalesce on the main queue and select the newest pending buffer. At most two
+drawables await presentation and at most two submissions await GPU completion;
 the three-drawable pool and per-frame autorelease pool remain. CADisplayLink
 provides a fallback and cadence measurement rather than delaying every decoded
 frame until its next tick. Zoom, static redraws and touch geometry still use the
 same main-thread renderer. The scheduling change requires a device comparison;
 no new latency improvement is claimed from the local build alone.
+Build 7's single pending-presentation limit reduced actual new-frame presentation
+to about 30 fps on the fixture iPad despite a 60 Hz display link. Build 8 allows
+the next drawable to be submitted while the previous one waits for presentation.
 Retest stream/control reconnects, pause/resume and a static source mode switch;
 geometry is republished on a new renderer session even with identical calibration.
 
@@ -165,6 +168,14 @@ durations remain available. Small negative cross-device estimates within clock
 uncertainty are retained; invalid timestamp order is flagged. Bootstrap frames,
 static redraws, dropped and invalid frames are excluded from steady presentation
 summaries. Missing records are counted, never reconstructed as presentations.
+`capture_timestamp_ordered` separately flags whether the compositor's reported
+WGC timestamp precedes host acquisition. The fixture-3 logs contain mostly
+negative `capture_to_acquire` intervals; these remain visible in per-frame output
+and are excluded from capture-dependent summary stages. Other stages remain
+usable. `acquire_to_present` measures from the host's actual acquisition timestamp
+and provides an end-to-end estimate when the reported WGC timestamp is suspect.
+The reason for those compositor timestamps is not established by these logs;
+the analyzer does not clamp them or invent a capture-clock correction.
 These measurements cover WGC capture to Metal's presentation timestamp, excluding
 game input/rendering before capture and panel scanout/pixel response afterwards;
 continue the photographed-counter comparison and test normal tracing-off playback.

@@ -390,6 +390,27 @@ of decoded frames are still replaced before presentation; display callback
 cadence alone is not sustained unique-frame acceptance. The logs establish that
 the drawable stall is removed, but do not time the rest of the pipeline.
 
+The fixture-3 logs contain 1,086 matched frame traces with no unmatched host/iOS
+records: 553 steady presentations, 531 replacements, and about 30 unique
+presentations/s despite 60 Hz display callbacks. Median measured intervals are
+7.129 ms conversion/encoding, 1.933 ms send-to-receive, 4.465 ms decoding,
+13.045 ms ready-to-render, 0.797 ms GPU work and 30.219 ms GPU-to-presentation.
+Host acquisition to presentation is 59.766 ms median / 65.059 ms p95. Cross-device
+values are clock estimates, not camera-visible pixel latency. 1,083 reported WGC
+timestamps are later than host acquisition; their cause is unresolved. The
+analyzer preserves their signed intervals and flags capture ordering separately,
+excluding those frames from capture-dependent summary stages while retaining
+independent stages and acquisition-to-presentation measurements.
+
+Build 8 corrects build 7's single pending-presentation limit to two pending
+drawables. Presentation can take two refresh intervals on this device, so waiting
+for each presentation before admitting another draw throttles output to 30 fps.
+Portable tests now simulate 120 consecutive refreshes with two-refresh delayed
+presentation and verify one admission per refresh within the two-drawable limit.
+All 37 C# regressions pass, including future compositor timestamps retaining
+usable independent stage timings. A rebuilt build-8 IPA and another device run
+are needed to confirm restored presentation rate and any latency improvement.
+
 Build 7 implements immediate coalesced render requests on decode readiness and
 presentation/GPU completion, with one unpresented drawable and two GPU submissions.
 CADisplayLink remains a fallback/cadence monitor. Portable tests exercise burst

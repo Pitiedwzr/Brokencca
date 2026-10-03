@@ -1,18 +1,19 @@
 #pragma once
 #include <stdbool.h>
 
-// Access under the view's lock. One coalesced main-thread request, one drawable
-// awaiting presentation, and at most two GPU submissions across generations.
+// Access under the view's lock. One coalesced main-thread request and at most
+// two drawables awaiting presentation / GPU submissions across generations.
+// Presentation can take two refresh intervals; one pending drawable halves fps.
 typedef struct { bool queued, paused; unsigned gpu, presenting; } BCVideoSchedule;
 typedef struct { bool gpuFinished, presentationFinished; } BCVideoRenderTicket;
 
 static inline bool BCVideoRequestRender(BCVideoSchedule *s, bool ready) {
-    if (!ready || s->paused || s->queued || s->gpu>=2 || s->presenting>=1) return false;
+    if (!ready || s->paused || s->queued || s->gpu>=2 || s->presenting>=2) return false;
     s->queued=true; return true;
 }
 static inline bool BCVideoBeginRender(BCVideoSchedule *s, bool ready) {
     s->queued=false;
-    if (!ready || s->paused || s->gpu>=2 || s->presenting>=1) return false;
+    if (!ready || s->paused || s->gpu>=2 || s->presenting>=2) return false;
     s->gpu++; s->presenting++; return true;
 }
 static inline void BCVideoPresentationFinished(BCVideoSchedule *s, BCVideoRenderTicket *ticket) {
