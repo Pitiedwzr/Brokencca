@@ -120,17 +120,21 @@ wait/GPU timings and photographed frame differences, including the first startup
 
 ## Presentation scheduling and per-frame timing
 
-IPA build 8 requests rendering as soon as a decoded frame is ready. Requests
-coalesce on the main queue and select the newest pending buffer. At most two
+IPA build 9 selects the newest decoded buffer synchronously in each 60 Hz
+CADisplayLink callback and admits at most one render for that refresh. It requests
+presentation at the callback's `targetTimestamp`; decode and Metal completion
+callbacks mark pending work without submitting extra draws between refreshes. At most two
 drawables await presentation and at most two submissions await GPU completion;
-the three-drawable pool and per-frame autorelease pool remain. CADisplayLink
-provides a fallback and cadence measurement rather than delaying every decoded
-frame until its next tick. Zoom, static redraws and touch geometry still use the
+the three-drawable pool and per-frame autorelease pool remain. Zoom, static redraws and touch geometry still use the
 same main-thread renderer. The scheduling change requires a device comparison;
 no new latency improvement is claimed from the local build alone.
 Build 7's single pending-presentation limit reduced actual new-frame presentation
 to about 30 fps on the fixture iPad despite a 60 Hz display link. Build 8 allows
 the next drawable to be submitted while the previous one waits for presentation.
+The game baseline then exposed multiple callbacks sharing a presentation timestamp.
+Build 9 aligns requests with display refreshes to address that grouping. This
+requires device verification; callback counts alone do not prove distinct visible
+screen updates. iOS 15 remains supported; CAMetalDisplayLink/iOS 17 is not required.
 Retest stream/control reconnects, pause/resume and a static source mode switch;
 geometry is republished on a new renderer session even with identical calibration.
 
@@ -144,6 +148,12 @@ logging each frame can affect the measurement and power consumption.
 
 The host emits `video_frame_host` records and clock-sync `video_clock` samples.
 iOS emits JSON after `BCCA_VIDEO_FRAME`, including presentation/drop outcome.
+Build 9 adds `refresh_us` and `target_present_us`. The analyzer reports signed
+`target_to_present` error and per-generation `presentation_cadence`: callback
+counts, distinct presentation timestamps, additional frames sharing a timestamp,
+and the rate of distinct timestamps. These are reported presentation events;
+continue camera checks to establish actual visible frame changes. Older logs
+remain readable, with missing target measurements left blank.
 Join them by video generation and frame ID with the packaged analyzer:
 
 ```powershell
@@ -179,6 +189,14 @@ the analyzer does not clamp them or invent a capture-clock correction.
 These measurements cover WGC capture to Metal's presentation timestamp, excluding
 game input/rendering before capture and panel scanout/pixel response afterwards;
 continue the photographed-counter comparison and test normal tracing-off playback.
+
+The host presentation watchdog measures time since an outstanding sent frame or
+last presentation progress. After all sent frames have presented, source idle
+time has no deadline. The first frame after that idle period receives a fresh
+250 ms budget. Repeated feedback and new sends cannot indefinitely extend a
+genuine stall; a static source's unpresented final frame still times out. Initial
+presentation retains its three-second startup allowance. Retest game transitions
+and static screens without an unnecessary reconnect or bitrate reduction.
 
 ## What to test and return
 

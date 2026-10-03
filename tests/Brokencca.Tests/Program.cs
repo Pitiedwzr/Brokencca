@@ -14,6 +14,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("video wire framing and AVC validation", VideoProtocolTests.Framing),
     ("H.264 configuration, non-B pictures and input protection", () => Sync(VideoProtocolTests.Codec)),
     ("per-frame timing correlation, clock uncertainty and missing/drop timestamps", () => Sync(VideoTimingTests.Pipeline)),
+    ("presentation watchdog source idle/resume and genuine stalled frames", () => Sync(VideoPresentationTests.Watchdog)),
     ("fragmented and concatenated frames", Fragments),
     ("reject malformed headers and payloads", InvalidFrames),
     ("reject truncated header and payload", TruncatedFrames),

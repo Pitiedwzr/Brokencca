@@ -3,7 +3,11 @@ using System.Text.Json;
 namespace Brokencca.Core;
 
 public sealed record VideoTimingResult(ulong Generation, ulong FrameId, string Outcome, bool Bootstrap, bool Redraw,
-    bool Valid, bool CaptureTimestampOrdered, double? ClockUncertaintyMs, double? ClockSampleAgeMs, Dictionary<string, double?> DurationsMs);
+    bool Valid, bool CaptureTimestampOrdered, double? ClockUncertaintyMs, double? ClockSampleAgeMs, Dictionary<string, double?> DurationsMs,
+    long PresentedUs, long TargetPresentUs, long RefreshUs);
+
+public sealed record VideoPresentationCadence(ulong Generation, int Presentations, int DistinctPresentationTimes,
+    int SameTimestampAdditionalFrames, double ElapsedSeconds, double? DistinctTimesPerSecond);
 
 /// <summary>Correlates one captured frame through its actual Metal presentation.
 /// Cross-device durations are estimates; local durations never require clock synchronization.</summary>
@@ -11,7 +15,7 @@ public static class VideoTimingAnalyzer
 {
     public static readonly string[] StageNames = ["capture_to_acquire", "acquire_to_submit", "convert_encode",
         "encoded_queue", "socket_write", "send_to_receive", "decode_queue", "decode", "decode_dispatch",
-        "ready_to_render", "render_cpu", "gpu_queue", "gpu", "gpu_to_present", "receive_to_present", "capture_to_present", "acquire_to_present"];
+        "ready_to_render", "render_cpu", "gpu_queue", "gpu", "gpu_to_present", "receive_to_present", "capture_to_present", "acquire_to_present", "target_to_present"];
 
     public static IEnumerable<JsonElement> ReadRecords(IEnumerable<string> lines)
     {
@@ -61,9 +65,13 @@ public static class VideoTimingAnalyzer
         Local("gpu", ios, "gpu_started_us", "gpu_ended_us");
         string outcome = ios.GetProperty("outcome").GetString()!;
         bool presented = outcome == "presented" && Timestamp(ios, "presented_us") > 0;
+        long target = ios.TryGetProperty("target_present_us", out _) ? Timestamp(ios,"target_present_us") : 0;
+        long refresh = ios.TryGetProperty("refresh_us", out _) ? Timestamp(ios,"refresh_us") : 0;
         if (presented) {
             Local("gpu_to_present", ios, "gpu_ended_us", "presented_us");
             Local("receive_to_present", ios, "received_us", "presented_us");
+            // Signed error relative to the requested refresh; older IPA logs lack this field.
+            if (target > 0) stages["target_to_present"] = (Timestamp(ios,"presented_us")-target)/1000.0;
         }
         double? uncertaintyMs = null, clockAgeMs = null;
         if (clock is { } sample)
@@ -85,8 +93,17 @@ public static class VideoTimingAnalyzer
             }
         }
         return new(generation, frame, outcome, host.GetProperty("bootstrap").GetBoolean(), ios.GetProperty("redraw").GetBoolean(),
-            valid, captureOrdered, uncertaintyMs, clockAgeMs, stages);
+            valid, captureOrdered, uncertaintyMs, clockAgeMs, stages, Timestamp(ios,"presented_us"), target, refresh);
     }
+
+    public static VideoPresentationCadence[] PresentationCadence(IEnumerable<VideoTimingResult> results) => results
+        .Where(r => r.Valid && r.Outcome == "presented" && !r.Bootstrap && !r.Redraw && r.PresentedUs > 0)
+        .GroupBy(r => r.Generation).OrderBy(g => g.Key).Select(g => {
+            long[] times = g.Select(r => r.PresentedUs).Distinct().Order().ToArray();
+            double elapsed = (times[^1]-times[0])/1_000_000.0;
+            return new VideoPresentationCadence(g.Key,g.Count(),times.Length,g.Count()-times.Length,elapsed,
+                elapsed > 0 ? (times.Length-1)/elapsed : null);
+        }).ToArray();
 
     public static JsonElement? SelectClock(IEnumerable<JsonElement> samples, ulong generation, long sendStartedUs)
     {

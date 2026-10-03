@@ -19,7 +19,7 @@ public static class VideoStreamer
     private static long generations, frameIds;
     private sealed record Frame(ulong Id, ulong CaptureUs, byte[] Bytes, bool Idr, byte[] Config, long Enqueued,
         long AcquiredUs, long SubmittedUs, long EncodedUs);
-    private sealed class PipelineState { public volatile string Status = "source-idle"; public long LastAdmission; }
+    private sealed class PipelineState { public volatile string Status = "source-idle"; }
     public static async Task RunAsync(VideoOptions options, ReadOnlyMemory<byte> sessionToken, CancellationToken token)
     {
         int bitrate = options.Bitrate, longEdge = options.LongEdge;
@@ -119,8 +119,7 @@ public static class VideoStreamer
                     ? "iOS decoder hardware verified." : "iOS decoder capability checked; session verification unavailable on iOS 15–16.");
             long sentId = 0;
             ulong lastReceived = 0, lastDecoded = 0, lastPresented = 0;
-            long progress = Stopwatch.GetTimestamp();
-            long presentationStarted = progress;
+            var presentationWatchdog = new VideoPresentationWatchdog();
             int pendingDecode = 0;
             int displayMilliHz = 0; long replacedDecoded = 0, pingUs = 0;
             double clockOffsetUs = 0, clockUncertaintyUs = double.PositiveInfinity;
@@ -159,7 +158,7 @@ public static class VideoStreamer
                         ulong received = ulong.Parse(f.GetProperty("receivedId").GetString()!), decoded = ulong.Parse(f.GetProperty("decodedId").GetString()!), presented = ulong.Parse(f.GetProperty("presentedId").GetString()!);
                         if (received < lastReceived || decoded < lastDecoded || presented < lastPresented || received > (ulong)Interlocked.Read(ref sentId))
                             throw new InvalidDataException("Invalid video feedback frame history.");
-                        if (presented > lastPresented) Interlocked.Exchange(ref progress, Stopwatch.GetTimestamp());
+                        presentationWatchdog.Presented(presented, MonotonicUs());
                         lastReceived = received; lastDecoded = decoded; lastPresented = presented;
                         Volatile.Write(ref pendingDecode, f.GetProperty("pendingDecode").GetInt32());
                         Volatile.Write(ref displayMilliHz, f.GetProperty("displayMilliHz").GetInt32());
@@ -174,6 +173,7 @@ public static class VideoStreamer
             // Its original capture timestamp remains intact for honest latency diagnostics.
                 if (bootstrap.Bytes.Length > maxAu) throw new IOException("Bootstrap AU exceeds receiver limit.");
                 Interlocked.Exchange(ref sentId, (long)bootstrap.Id);
+                presentationWatchdog.Sent(bootstrap.Id, MonotonicUs());
                 await SendFrame(bootstrap, true);
                 initialIdr = true;
             ready.Set();
@@ -196,14 +196,16 @@ public static class VideoStreamer
                     if (!initialIdr && !next.Idr) throw new InvalidDataException("First video frame is not IDR.");
                     initialIdr = true;
                     Interlocked.Exchange(ref sentId, (long)next.Id);
+                    presentationWatchdog.Sent(next.Id, MonotonicUs());
                     await SendFrame(next, false);
                     sent++; bytes += next.Bytes.Length;
                 }
                 else await Send(VideoMessageType.Status, JsonSerializer.SerializeToUtf8Bytes(new { state = state.Status, reason = state.Status == "paused" ? "Source minimized or unavailable" : "Waiting for source update" }));
                 if (Volatile.Read(ref thermal) is "serious" or "critical") throw new IOException("iOS thermal limit: " + thermal);
-                if (lastPresented == 0 && Stopwatch.GetElapsedTime(presentationStarted).TotalSeconds > 3)
+                VideoPresentationHealth health = presentationWatchdog.Evaluate(MonotonicUs());
+                if (health == VideoPresentationHealth.FirstFrameTimedOut)
                     throw new IOException("iOS did not present the first video frame.");
-                if (Stopwatch.GetElapsedTime(Interlocked.Read(ref state.LastAdmission)).TotalMilliseconds < 100 && Stopwatch.GetElapsedTime(Interlocked.Read(ref progress)).TotalMilliseconds > 250)
+                if (health == VideoPresentationHealth.Stalled)
                     throw new IOException("Video presentation feedback stalled.");
                 if (options.Diagnostics && Stopwatch.GetElapsedTime(lastReport).TotalSeconds >= 1)
                 {
@@ -311,7 +313,6 @@ public static class VideoStreamer
                             {
                                 pending.Add(f.Timestamp100ns, ((ulong)Interlocked.Increment(ref frameIds),
                                     (ulong)(f.Timestamp100ns / 10), Stopwatch.GetTimestamp(), acquiredUs, submittedUs));
-                                Interlocked.Exchange(ref state.LastAdmission, Stopwatch.GetTimestamp());
                                 cadence.Admit(f.Timestamp100ns);
                                 break;
                             }
@@ -331,7 +332,6 @@ public static class VideoStreamer
                     {
                         ulong id = (ulong)Interlocked.Increment(ref frameIds);
                         pending.Add(f.Timestamp100ns, (id, (ulong)(f.Timestamp100ns / 10), Stopwatch.GetTimestamp(), acquiredUs, encoderSubmittedUs));
-                        Interlocked.Exchange(ref state.LastAdmission, Stopwatch.GetTimestamp());
                         state.Status = "running";
                     }
                     Thread.Sleep(1);

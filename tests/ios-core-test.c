@@ -82,13 +82,16 @@ static void test_video_schedule(void) {
         int slot=tick%2;
         if (tick>=2) BCVideoPresentationFinished(&s,&refresh[slot]);
         refresh[slot]=(BCVideoRenderTicket){0};
-        assert(BCVideoRequestRender(&s,true)); assert(BCVideoBeginRender(&s,true));
+        assert(BCVideoRequestRender(&s,true)); assert(BCVideoBeginRefreshRender(&s,true,1000000+(uint64_t)tick*16667));
         BCVideoGPUFinished(&s,&refresh[slot],false);
+        assert(!BCVideoBeginRefreshRender(&s,true,1000000+(uint64_t)tick*16667));
         assert(s.gpu==0 && s.presenting==(tick==0 ? 1u : 2u));
         if (tick>0) assert(!BCVideoRequestRender(&s,true));
     }
     BCVideoPresentationFinished(&s,&refresh[0]); BCVideoPresentationFinished(&s,&refresh[1]);
     assert(s.gpu==0 && s.presenting==0);
+    assert(!BCVideoBeginRefreshRender(&s,true,s.lastRefreshUs)); // callbacks can't reuse the previous refresh
+    assert(!BCVideoBeginRefreshRender(&s,true,s.lastRefreshUs-1)); // stale refresh
     const char *hello="{\"sessionToken\":\"00000000000000000000000000000000\",\"videoVersion\":1}";
     const char *timed="{\"sessionToken\":\"00000000000000000000000000000000\",\"videoVersion\":1,\"frameTiming\":true}";
     const char *duplicate="{\"sessionToken\":\"x\",\"videoVersion\":1,\"frameTiming\":true,\"frameTiming\":false}";

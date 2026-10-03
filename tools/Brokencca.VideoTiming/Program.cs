@@ -32,12 +32,13 @@ try
     if (args.Length == 6)
     {
         using var csv = new StreamWriter(args[5]);
-        csv.WriteLine("generation,frame_id,outcome,bootstrap,redraw,valid,capture_timestamp_ordered,clock_uncertainty_ms,clock_sample_age_ms," +
+        csv.WriteLine("generation,frame_id,outcome,bootstrap,redraw,valid,capture_timestamp_ordered,clock_uncertainty_ms,clock_sample_age_ms,presented_us,target_present_us,refresh_us," +
             string.Join(',', VideoTimingAnalyzer.StageNames.Select(n => n + "_ms")));
         string Number(double? value) => value?.ToString("F6", CultureInfo.InvariantCulture) ?? "";
         foreach (var r in results) csv.WriteLine(string.Join(',', new[] {
             r.Generation.ToString(CultureInfo.InvariantCulture), r.FrameId.ToString(CultureInfo.InvariantCulture), r.Outcome,
-            r.Bootstrap.ToString(), r.Redraw.ToString(), r.Valid.ToString(), r.CaptureTimestampOrdered.ToString(), Number(r.ClockUncertaintyMs), Number(r.ClockSampleAgeMs)
+            r.Bootstrap.ToString(), r.Redraw.ToString(), r.Valid.ToString(), r.CaptureTimestampOrdered.ToString(), Number(r.ClockUncertaintyMs), Number(r.ClockSampleAgeMs),
+            r.PresentedUs.ToString(CultureInfo.InvariantCulture), r.TargetPresentUs.ToString(CultureInfo.InvariantCulture), r.RefreshUs.ToString(CultureInfo.InvariantCulture)
         }.Concat(VideoTimingAnalyzer.StageNames.Select(n => Number(r.DurationsMs[n])))));
     }
     var steady = results.Where(r => r.Valid && r.Outcome == "presented" && !r.Bootstrap && !r.Redraw).ToArray();
@@ -50,7 +51,8 @@ try
     Console.WriteLine(JsonSerializer.Serialize(new { kind = "video_timing_summary", matched_frames = matched.Count,
         unmatched_host = hosts.Count-matched.Count, unmatched_ios = unmatchedIos, steady_presentations = steady.Length,
         replaced = results.Count(r => r.Outcome == "replaced"), invalid = results.Count(r => !r.Valid),
-        capture_timestamp_unordered = results.Count(r => !r.CaptureTimestampOrdered), stages }, jsonOptions));
+        capture_timestamp_unordered = results.Count(r => !r.CaptureTimestampOrdered),
+        presentation_cadence = VideoTimingAnalyzer.PresentationCadence(results), stages }, jsonOptions));
     Console.Error.WriteLine("Cross-device times are clock estimates; socket_write overlaps send_to_receive. Bootstrap/redraw/invalid/dropped frames are excluded from steady presentation summaries. Presentation timestamps do not measure camera-visible pixel response.");
     return 0;
 }

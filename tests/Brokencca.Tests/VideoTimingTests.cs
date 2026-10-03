@@ -69,6 +69,24 @@ internal static class VideoTimingTests
             "Oct 3 device[1] <Notice>: BCCA_VIDEO_FRAME " + ios.GetRawText().Replace("\n",""),"{broken",
             "{\"kind\":\"diagnostics\"}"]).ToArray();
         Check(records.Length==2);
+        var targeted = Json(ios.GetRawText().Replace("\"presented_us\":1416667", "\"presented_us\":1416667,\"target_present_us\":1416000,\"refresh_us\":1399333"));
+        var targetResult = VideoTimingAnalyzer.Analyze(host,targeted,clock);
+        Check(targetResult.Valid && targetResult.TargetPresentUs==1416000 && targetResult.RefreshUs==1399333);
+        Near(targetResult.DurationsMs["target_to_present"],.667);
+        Check(result.DurationsMs["target_to_present"] is null); // pre-build-9 logs remain readable
+        var cadence = VideoTimingAnalyzer.PresentationCadence([
+            result, result with { FrameId=11 }, // two frames reported at the same presentation time
+            result with { FrameId=12,PresentedUs=result.PresentedUs+16667 },
+            result with { FrameId=13,PresentedUs=result.PresentedUs+33334 },
+            result with { FrameId=14,Redraw=true }, result with { FrameId=15,Bootstrap=true },
+            result with { FrameId=16,Valid=false }, result with { FrameId=17,Outcome="replaced" },
+            result with { Generation=2,FrameId=18 }
+        ]);
+        Check(cadence.Length==2 && cadence[0].Presentations==4 && cadence[0].DistinctPresentationTimes==3 &&
+            cadence[0].SameTimestampAdditionalFrames==1 && cadence[0].DistinctTimesPerSecond > 59.99 &&
+            cadence[0].DistinctTimesPerSecond < 60.01);
+        Check(cadence[1].Presentations==1 && cadence[1].DistinctTimesPerSecond is null);
+        Check(VideoTimingAnalyzer.PresentationCadence([]).Length==0);
     }
     private static JsonElement Json(string text) { using var doc=JsonDocument.Parse(text); return doc.RootElement.Clone(); }
     private static void Near(double? value,double expected) => Check(value is not null && Math.Abs(value.Value-expected)<1e-8);

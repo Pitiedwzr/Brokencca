@@ -34,7 +34,7 @@
 @property(nonatomic, strong) CADisplayLink *displayLink;
 @property(nonatomic, strong) BCDisplayTarget *displayTarget;
 - (void)drawFrame:(CADisplayLink *)link;
-- (void)renderLatestFrame;
+- (void)renderLatestFrameForRefresh:(uint64_t)refreshUs targetTime:(CFTimeInterval)targetTime;
 - (void)requestRender;
 @end
 
@@ -153,31 +153,29 @@
     if (_lastTick && link.timestamp > _lastTick) _displayMilliHz = (uint32_t)MIN(240000,round(1000.0/(link.timestamp-_lastTick)));
     _lastTick = link.timestamp;
     [self.guard unlock];
-    // Decode/presentation callbacks request rendering immediately. The display
-    // link supplies a fallback and measures cadence, without gating new frames.
-    [self requestRender];
+    // Select the newest buffer synchronously in the display callback. A main-queue
+    // dispatch or a Metal completion must not admit a second draw for this refresh.
+    @autoreleasepool {
+        [self renderLatestFrameForRefresh:(uint64_t)(link.timestamp*1000000.0) targetTime:link.targetTimestamp];
+    }
 }
 - (void)requestRender {
     [self.guard lock];
-    BOOL requested=BCVideoRequestRender(&_schedule,_latest && _generation);
+    BCVideoRequestRender(&_schedule,_latest && _generation);
     [self.guard unlock];
-    if (!requested) return;
-    __weak BCVideoView *weakSelf=self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        @autoreleasepool { [weakSelf renderLatestFrame]; }
-    });
 }
-- (void)renderLatestFrame {
+- (void)renderLatestFrameForRefresh:(uint64_t)refreshUs targetTime:(CFTimeInterval)targetTime {
     BOOL drawableBounds=self.available && self.bounds.size.width>0 && self.bounds.size.height>0;
     CFTimeInterval renderStarted = CACurrentMediaTime();
     [self.guard lock];
-    if (!BCVideoBeginRender(&_schedule,drawableBounds && _latest && _generation)) { [self.guard unlock]; return; }
+    if (!BCVideoBeginRefreshRender(&_schedule,drawableBounds && _latest && _generation,refreshUs)) { [self.guard unlock]; return; }
     __block BCVideoRenderTicket ticket={0};
     CVPixelBufferRef buffer = _latest; _latest = NULL;
     if (_displayedBuffer) CVPixelBufferRelease(_displayedBuffer);
     _displayedBuffer = CVPixelBufferRetain(buffer);
     uint64_t frame = _latestFrame, generation = _latestGeneration, revision = _revision; BCVideoGeometry *geometry = self.latestGeometry;
     BCVideoTiming *timing=[self.latestTiming renderCopy]; timing.renderStartedUs=BCVideoNowUs(); self.displayedTiming=timing;
+    timing.refreshUs=refreshUs; timing.targetPresentUs=(uint64_t)(targetTime*1000000.0);
     [self.guard unlock];
     geometry = [[BCVideoGeometry alloc] initWithConfiguration:geometry.configuration zoomToPlayfield:self.zoomToPlayfield];
     CVMetalTextureRef y = NULL, uv = NULL;
@@ -255,7 +253,7 @@
         [timing gpuStarted:(uint64_t)(finished.GPUStartTime*1000000.0) ended:(uint64_t)(finished.GPUEndTime*1000000.0)
             completed:completedUs failed:finished.status==MTLCommandBufferStatusError];
     }];
-    [commands presentDrawable:drawable]; timing.committedUs=BCVideoNowUs(); [commands commit];
+    [commands presentDrawable:drawable atTime:targetTime]; timing.committedUs=BCVideoNowUs(); [commands commit];
     double renderMs = (CACurrentMediaTime()-renderStarted)*1000;
     [self.guard lock];
     if (generation == _generation && revision == _revision) {

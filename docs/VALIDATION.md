@@ -390,6 +390,34 @@ of decoded frames are still replaced before presentation; display callback
 cadence alone is not sustained unique-frame acceptance. The logs establish that
 the drawable stall is removed, but do not time the rest of the pipeline.
 
+The real-game baseline (RX 6650 XT, portrait 720x1280, iPad mini 5, input hook
+and LEDs enabled) covers about 46 seconds and 2,571 matched traces. Acquisition
+to presentation is 36.271 ms median / 53.034 ms p95; conversion/encoding is
+8.208 ms median, transport 1.133 ms, decode 1.263 ms, GPU work 0.814 ms and
+GPU-to-presentation 23.013 ms. 73 decoded frames are replaced. Input has no
+sequence gaps or queue overflow, but only 10–12 messages/s, not a demanding
+touch-input stress test. Thermal state stays nominal.
+
+There is one false presentation-stall reconnect after a 919 ms source gap:
+frame 2019 actually presents 22.473 ms after receipt, while the host evaluates
+the old presentation-progress deadline immediately on resume. Recovery drops
+bitrate from 10 to 7.5 Mbps. Also, many frame callbacks share a presentation
+timestamp: generation 1 has 1,965 steady callbacks but only 1,099 distinct times,
+about 30.6 distinct times/s; generation 2 is about 33.5/s. Callback count must
+not be reported as proof of 60 distinct visible frame updates.
+
+Build 9 measures watchdog deadlines from outstanding transmitted work, restarting
+after fully acknowledged source inactivity. It preserves startup, active-stall
+and static-unpresented-frame protection. Rendering now selects the newest buffer
+once per display callback and requests its target presentation timestamp; it
+retains two pending presentations and the three-drawable pool. Frame traces add
+refresh and target timestamps. Analyzer output distinguishes callback counts
+from distinct presentation timestamps and reports target-to-presentation error.
+Local 38/38 regressions and portable C scheduling tests pass, including the
+919 ms idle/resume scenario, genuine stalls, duplicate feedback, one render per
+refresh and two-refresh delayed presentation. Device confirmation and Xcode
+compilation of build 9 remain pending; no new latency reduction is claimed.
+
 The fixture-3 logs contain 1,086 matched frame traces with no unmatched host/iOS
 records: 553 steady presentations, 531 replacements, and about 30 unique
 presentations/s despite 60 Hz display callbacks. Median measured intervals are

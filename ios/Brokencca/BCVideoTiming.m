@@ -40,6 +40,7 @@
         @"outcome":outcome,@"redraw":@(self.redraw),@"capture_us":@(self.capturedUs),@"received_us":@(self.receivedUs),
         @"decode_submitted_us":@(self.decodeSubmittedUs),@"decoded_us":@(self.decodedUs),@"ready_us":@(self.readyUs),
         @"render_started_us":@(self.renderStartedUs),@"committed_us":@(self.committedUs),
+        @"refresh_us":@(self.refreshUs),@"target_present_us":@(self.targetPresentUs),
         @"gpu_started_us":@(_gpuStartedUs),@"gpu_ended_us":@(_gpuEndedUs),@"gpu_completed_us":@(_gpuCompletedUs),
         @"presented_us":@(_presentedUs)};
     NSData *json=[NSJSONSerialization dataWithJSONObject:record options:0 error:nil];
