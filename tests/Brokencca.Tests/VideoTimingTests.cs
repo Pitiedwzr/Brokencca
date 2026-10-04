@@ -83,6 +83,14 @@ internal static class VideoTimingTests
         Check(targetResult.RenderOnMainThread is null && targetResult.DurationsMs["refresh_to_callback"] is null);
         var mainThread = Json(isolated.GetRawText().Replace("\"render_on_main_thread\":false", "\"render_on_main_thread\":true"));
         Check(VideoTimingAnalyzer.Analyze(host,mainThread,clock).RenderOnMainThread==true);
+        var arrival = Json(ios.GetRawText().Replace("\"presented_us\":1416667",
+            "\"presented_us\":1416667,\"target_present_us\":0,\"refresh_us\":0,\"callback_us\":0,\"render_on_main_thread\":false,\"render_trigger\":\"pending-frame\""));
+        var arrivalResult = VideoTimingAnalyzer.Analyze(host,arrival,clock);
+        Check(arrivalResult.Valid && arrivalResult.RenderTrigger=="pending-frame" && arrivalResult.RenderOnMainThread==false);
+        Check(arrivalResult.DurationsMs["target_to_present"] is null && arrivalResult.DurationsMs["refresh_to_render"] is null &&
+            arrivalResult.DurationsMs["callback_to_render"] is null && result.RenderTrigger is null);
+        Near(arrivalResult.DurationsMs["acquire_to_present"],15.667);
+        Near(arrivalResult.DurationsMs["ready_to_render"],.5);
         var cadence = VideoTimingAnalyzer.PresentationCadence([
             result, result with { FrameId=11 }, // two frames reported at the same presentation time
             result with { FrameId=12,PresentedUs=result.PresentedUs+16667 },

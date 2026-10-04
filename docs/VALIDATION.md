@@ -420,6 +420,33 @@ startup/pause/resume/shutdown runtime checks and iPad presentation confirmation
 remain pending from this Windows workspace. A macOS standalone lifecycle harness
 is not used because its display-link creation API differs from the iOS path.
 
+The build-10 device retest (`game_video_playing_2.log` and
+`ios_game_video_playing_2.log`) confirms all 11,671 steady rendered frames ran
+off main. Median acquisition-to-presentation is 36.120 ms (p95 55.656 ms),
+GPU-to-presentation 15.113 ms and ready-to-render 8.438 ms. Replacements fell
+from 24.5% to 12.3%; 11,087 distinct presentation timestamps average 47.0/s over
+the entire recording, including source inactivity. Approximately 12.8% of
+presentations miss the requested target by over 8 ms. The user confirmed
+pause/resume, zoom, rotation and reconnect alignment. These logs demonstrate
+an improvement, while the callback wait and occasional host encode/queue spikes
+remain measurable.
+
+Build 11 removes the display-callback admission wait: decoded-frame arrivals
+and slot releases enqueue a coalesced render-thread wake and present ASAP.
+The display link remains a fallback, with two GPU and two presentation slots
+and a latest-buffer mailbox. Timing records identify the render trigger; absent
+ASAP deadlines and arrival callback references are zero, not fabricated targets.
+Local 38/38 regressions cover new timing records and old-log compatibility;
+portable C checks cover burst coalescing, slot release, pause/retirement and
+GPU failure. iOS compilation through GitHub Actions and a new device run remain
+required to measure latency and detect renewed presentation grouping. Compare
+ready-to-render, GPU-to-presentation, acquisition-to-presentation, replacements
+and distinct presentation times against playing-2, along with the same lifecycle
+and alignment checks. The self-contained Windows package rebuild passed, and
+its analyzer processed all 13,496 matched playing-2 records with zero invalid
+frames, preserving the 11,671 steady presentations and older-log metadata.
+No build-11 performance improvement is claimed locally.
+
 The real-game baseline (RX 6650 XT, portrait 720x1280, iPad mini 5, input hook
 and LEDs enabled) covers about 46 seconds and 2,571 matched traces. Acquisition
 to presentation is 36.271 ms median / 53.034 ms p95; conversion/encoding is

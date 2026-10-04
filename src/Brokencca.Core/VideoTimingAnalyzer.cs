@@ -4,7 +4,7 @@ namespace Brokencca.Core;
 
 public sealed record VideoTimingResult(ulong Generation, ulong FrameId, string Outcome, bool Bootstrap, bool Redraw,
     bool Valid, bool CaptureTimestampOrdered, double? ClockUncertaintyMs, double? ClockSampleAgeMs, Dictionary<string, double?> DurationsMs,
-    long PresentedUs, long TargetPresentUs, long RefreshUs, long CallbackUs, bool? RenderOnMainThread);
+    long PresentedUs, long TargetPresentUs, long RefreshUs, long CallbackUs, bool? RenderOnMainThread, string? RenderTrigger);
 
 public sealed record VideoPresentationCadence(ulong Generation, int Presentations, int DistinctPresentationTimes,
     int SameTimestampAdditionalFrames, double ElapsedSeconds, double? DistinctTimesPerSecond);
@@ -70,6 +70,7 @@ public static class VideoTimingAnalyzer
         long refresh = ios.TryGetProperty("refresh_us", out _) ? Timestamp(ios,"refresh_us") : 0;
         long callback = ios.TryGetProperty("callback_us", out _) ? Timestamp(ios,"callback_us") : 0;
         bool? renderOnMain = ios.TryGetProperty("render_on_main_thread", out var main) ? main.GetBoolean() : null;
+        string? renderTrigger = ios.TryGetProperty("render_trigger", out var trigger) ? trigger.GetString() : null;
         if (refresh > 0) Local("refresh_to_render",ios,"refresh_us","render_started_us");
         if (callback > 0) {
             if (refresh > 0) Local("refresh_to_callback",ios,"refresh_us","callback_us");
@@ -101,7 +102,7 @@ public static class VideoTimingAnalyzer
             }
         }
         return new(generation, frame, outcome, host.GetProperty("bootstrap").GetBoolean(), ios.GetProperty("redraw").GetBoolean(),
-            valid, captureOrdered, uncertaintyMs, clockAgeMs, stages, Timestamp(ios,"presented_us"), target, refresh, callback, renderOnMain);
+            valid, captureOrdered, uncertaintyMs, clockAgeMs, stages, Timestamp(ios,"presented_us"), target, refresh, callback, renderOnMain, renderTrigger);
     }
 
     public static VideoPresentationCadence[] PresentationCadence(IEnumerable<VideoTimingResult> results) => results

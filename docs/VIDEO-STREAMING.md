@@ -355,16 +355,16 @@ submission occur on that thread. Geometry callbacks dispatch asynchronously to
 the main queue and validate generation, renderer and layout revisions. Pause
 and stop wake the render loop without blocking the UI; a keep-alive port prevents
 spinning while paused, and shutdown releases thread/display-link ownership.
-Render the newest ready buffer
-synchronously once per display callback, targeting `link.targetTimestamp` with
-`presentDrawable:atTime:`. Decode and Metal callbacks mark work pending but do
-not independently submit a drawable. A refresh timestamp guard rejects duplicate
-or stale refresh submissions. Record refresh/target/actual presentation times
-and count distinct presentation timestamps separately from callback counts.
-Record callback entry separately and report whether rendering ran on the main
-thread. Keep the display-callback wait in build 10 to isolate thread scheduling
-from presentation-policy changes; verify actual target misses and distinct
-presentation timestamps on a device before claiming any performance benefit.
+As of build 11, decoded-frame arrivals and GPU/presentation slot releases request
+one coalesced render-thread wake, selecting the newest buffer without waiting for
+the next display callback. The display link remains a fallback and cadence monitor.
+Requests before worker startup are retained; queued work rechecks pause, generation,
+layout and submission limits. Render with `presentDrawable:` for ASAP presentation.
+Record `render_trigger`, actual presentation times and the render-thread flag;
+count distinct presentation timestamps separately from callback counts. ASAP has
+no requested target time, and arrival renders have no display-callback reference,
+so those timing fields remain zero. Compare queue delay, GPU-to-presentation delay,
+end-to-end latency and grouping on a device before claiming a performance benefit.
 As of build 8 allow two unpresented drawables, freeing each slot at actual presentation
 (or GPU failure), independently of the two GPU submission slots. Callback order
 is unspecified, so each submission owns a ticket and releases each slot once.

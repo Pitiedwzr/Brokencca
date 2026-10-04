@@ -120,10 +120,11 @@ wait/GPU timings and photographed frame differences, including the first startup
 
 ## Presentation scheduling and per-frame timing
 
-IPA build 10 selects the newest decoded buffer synchronously in each 60 Hz
-CADisplayLink callback and admits at most one render for that refresh. It requests
-presentation at the callback's `targetTimestamp`; decode and Metal completion
-callbacks mark pending work without submitting extra draws between refreshes. At most two
+IPA build 11 wakes the dedicated render thread when a decoded frame arrives or
+a GPU/presentation slot becomes available. Wakes are coalesced and each render
+selects the newest decoded buffer. Metal uses `presentDrawable:` for presentation
+as soon as possible; the 60 Hz CADisplayLink remains a fallback and cadence monitor.
+At most two
 drawables await presentation and at most two submissions await GPU completion;
 the three-drawable pool and per-frame autorelease pool remain. A dedicated
 `Brokencca.VideoRender` thread owns the display link, run loop, drawable acquisition,
@@ -138,10 +139,12 @@ to about 30 fps on the fixture iPad despite a 60 Hz display link. Build 8 allows
 the next drawable to be submitted while the previous one waits for presentation.
 The game baseline then exposed multiple callbacks sharing a presentation timestamp.
 Build 9's main-thread display callbacks still missed targets and grouped frames
-in the baseline-2 / playing logs. Build 10 retains the one-render-per-refresh
-and target-time policy, isolating thread scheduling as the next experiment. It
-does not remove the display-callback wait; if callback timing improves but latency
-does not, a separate pacing experiment can then be assessed. Callback counts alone do not prove distinct visible
+in the baseline-2 / playing logs. Build 10 isolated thread scheduling while
+retaining the one-render-per-refresh and target-time policy. Its playing-2 run
+improved median acquisition-to-presentation latency to 36.120 ms, but waiting
+for the next display callback still cost a median 8.438 ms. Build 11 removes
+that wait; device logs must establish its latency and whether presentation
+grouping increases. Callback counts alone do not prove distinct visible
 screen updates. iOS 15 remains supported; CAMetalDisplayLink/iOS 17 is not required.
 Retest stream/control reconnects, pause/resume and a static source mode switch;
 geometry is republished on a new renderer session even with identical calibration.
@@ -168,7 +171,14 @@ counts rendered frames on/off the main thread (older logs report unknown).
 These scheduling intervals overlap the existing pipeline stages and must not
 be added to the end-to-end latency. Compare callback delay, target misses,
 distinct presentation timestamps, replacements and acquisition-to-presentation
-latency against the build-9 playing run. Also retest touch/LED alignment through
+latency against the preceding playing run. Build 11 adds `render_trigger`
+(`pending-frame` or `display-fallback`); the analyzer includes per-trigger counts.
+`pending-frame` includes arrival, slot-release and layout wakes. ASAP presentation
+sets `target_present_us` to zero, so target-error measurements are absent.
+Arrival renders also leave refresh/callback timestamps zero rather than attributing
+them to an unrelated display tick. Compare `ready_to_render`, `gpu_to_present`,
+`acquire_to_present`, replacements and distinct presentation timestamps against
+the build-10 playing-2 logs. Also retest touch/LED alignment through
 zoom, rotation, disconnect/reconnect and background/foreground transitions.
 Join them by video generation and frame ID with the packaged analyzer:
 

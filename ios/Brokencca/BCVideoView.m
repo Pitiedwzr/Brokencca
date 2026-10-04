@@ -33,7 +33,7 @@
 @property(nonatomic, strong) CAMetalLayer *renderLayer;
 @property(nonatomic, strong) BCVideoRenderLoop *renderLoop;
 - (void)drawFrame:(CADisplayLink *)link;
-- (void)renderLatestFrameForRefresh:(uint64_t)refreshUs targetTime:(CFTimeInterval)targetTime callbackUs:(uint64_t)callbackUs;
+- (void)renderLatestFrameForRefresh:(uint64_t)refreshUs callbackUs:(uint64_t)callbackUs;
 - (void)requestRender;
 @end
 
@@ -69,7 +69,8 @@
         if (library) _pipeline = [_device newRenderPipelineStateWithDescriptor:desc error:&error];
         if (!_pipeline || CVMetalTextureCacheCreate(kCFAllocatorDefault, NULL, _device, NULL, &_cache) != kCVReturnSuccess) { NSLog(@"Video Metal setup failed: %@", error); return self; }
         __weak BCVideoView *weakSelf=self;
-        _renderLoop=[[BCVideoRenderLoop alloc] initWithTick:^(CADisplayLink *link) { [weakSelf drawFrame:link]; }];
+        _renderLoop=[[BCVideoRenderLoop alloc] initWithTick:^(CADisplayLink *link) { [weakSelf drawFrame:link]; }
+            render:^{ [weakSelf renderLatestFrameForRefresh:0 callbackUs:0]; }];
     }
     return self;
 }
@@ -158,29 +159,31 @@
     [self.guard unlock];
     // Both display callback and GPU submission run on the dedicated render loop.
     @autoreleasepool {
-        [self renderLatestFrameForRefresh:(uint64_t)(link.timestamp*1000000.0) targetTime:link.targetTimestamp callbackUs:callbackUs];
+        [self renderLatestFrameForRefresh:(uint64_t)(link.timestamp*1000000.0) callbackUs:callbackUs];
     }
 }
 - (void)requestRender {
     [self.guard lock];
-    BCVideoRequestRender(&_schedule,_latest && _generation);
+    BOOL requested=BCVideoRequestRender(&_schedule,_latest && _generation);
     [self.guard unlock];
+    if (requested) [self.renderLoop requestRender];
 }
-- (void)renderLatestFrameForRefresh:(uint64_t)refreshUs targetTime:(CFTimeInterval)targetTime callbackUs:(uint64_t)callbackUs {
+- (void)renderLatestFrameForRefresh:(uint64_t)refreshUs callbackUs:(uint64_t)callbackUs {
     CFTimeInterval renderStarted = CACurrentMediaTime();
     [self.guard lock];
     CGRect bounds=_renderBounds;
     BOOL zoom=_zoomToPlayfield;
     uint64_t layoutRevision=_layoutRevision;
     BOOL drawableBounds=self.available && bounds.size.width>0 && bounds.size.height>0;
-    if (!BCVideoBeginRefreshRender(&_schedule,drawableBounds && _latest && _generation,refreshUs)) { [self.guard unlock]; return; }
+    if (!BCVideoBeginRender(&_schedule,drawableBounds && _latest && _generation)) { [self.guard unlock]; return; }
     __block BCVideoRenderTicket ticket={0};
     CVPixelBufferRef buffer = _latest; _latest = NULL;
     if (_displayedBuffer) CVPixelBufferRelease(_displayedBuffer);
     _displayedBuffer = CVPixelBufferRetain(buffer);
     uint64_t frame = _latestFrame, generation = _latestGeneration, revision = _revision; BCVideoGeometry *geometry = self.latestGeometry;
     BCVideoTiming *timing=[self.latestTiming renderCopy]; timing.renderStartedUs=BCVideoNowUs(); self.displayedTiming=timing;
-    timing.refreshUs=refreshUs; timing.targetPresentUs=(uint64_t)(targetTime*1000000.0);
+    timing.refreshUs=refreshUs; timing.targetPresentUs=0; // ASAP has no requested presentation deadline.
+    timing.renderTrigger=refreshUs ? @"display-fallback" : @"pending-frame";
     timing.callbackUs=callbackUs; timing.renderOnMainThread=NSThread.isMainThread;
     [self.guard unlock];
     geometry = [[BCVideoGeometry alloc] initWithConfiguration:geometry.configuration zoomToPlayfield:zoom];
@@ -259,7 +262,7 @@
         [timing gpuStarted:(uint64_t)(finished.GPUStartTime*1000000.0) ended:(uint64_t)(finished.GPUEndTime*1000000.0)
             completed:completedUs failed:finished.status==MTLCommandBufferStatusError];
     }];
-    [commands presentDrawable:drawable atTime:targetTime]; timing.committedUs=BCVideoNowUs(); [commands commit];
+    [commands presentDrawable:drawable]; timing.committedUs=BCVideoNowUs(); [commands commit];
     if (![self.displayedConfiguration isEqual:mapping]) {
         self.displayedConfiguration=[mapping copy];
         dispatch_async(dispatch_get_main_queue(), ^{

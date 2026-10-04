@@ -32,14 +32,15 @@ try
     if (args.Length == 6)
     {
         using var csv = new StreamWriter(args[5]);
-        csv.WriteLine("generation,frame_id,outcome,bootstrap,redraw,valid,capture_timestamp_ordered,clock_uncertainty_ms,clock_sample_age_ms,presented_us,target_present_us,refresh_us,callback_us,render_on_main_thread," +
+        csv.WriteLine("generation,frame_id,outcome,bootstrap,redraw,valid,capture_timestamp_ordered,clock_uncertainty_ms,clock_sample_age_ms,presented_us,target_present_us,refresh_us,callback_us,render_on_main_thread,render_trigger," +
             string.Join(',', VideoTimingAnalyzer.StageNames.Select(n => n + "_ms")));
         string Number(double? value) => value?.ToString("F6", CultureInfo.InvariantCulture) ?? "";
         foreach (var r in results) csv.WriteLine(string.Join(',', new[] {
             r.Generation.ToString(CultureInfo.InvariantCulture), r.FrameId.ToString(CultureInfo.InvariantCulture), r.Outcome,
             r.Bootstrap.ToString(), r.Redraw.ToString(), r.Valid.ToString(), r.CaptureTimestampOrdered.ToString(), Number(r.ClockUncertaintyMs), Number(r.ClockSampleAgeMs),
             r.PresentedUs.ToString(CultureInfo.InvariantCulture), r.TargetPresentUs.ToString(CultureInfo.InvariantCulture), r.RefreshUs.ToString(CultureInfo.InvariantCulture),
-            r.CallbackUs.ToString(CultureInfo.InvariantCulture), r.RenderOnMainThread?.ToString() ?? ""
+            r.CallbackUs.ToString(CultureInfo.InvariantCulture), r.RenderOnMainThread?.ToString() ?? "",
+            "\"" + (r.RenderTrigger ?? "").Replace("\"", "\"\"") + "\""
         }.Concat(VideoTimingAnalyzer.StageNames.Select(n => Number(r.DurationsMs[n])))));
     }
     var steady = results.Where(r => r.Valid && r.Outcome == "presented" && !r.Bootstrap && !r.Redraw).ToArray();
@@ -56,6 +57,7 @@ try
         render_on_main_thread = steady.Count(r => r.RenderOnMainThread==true),
         render_off_main_thread = steady.Count(r => r.RenderOnMainThread==false),
         render_thread_unknown = steady.Count(r => r.RenderOnMainThread is null),
+        render_triggers = steady.GroupBy(r => r.RenderTrigger ?? "unknown").ToDictionary(g => g.Key, g => g.Count()),
         presentation_cadence = VideoTimingAnalyzer.PresentationCadence(results), stages }, jsonOptions));
     Console.Error.WriteLine("Cross-device times are clock estimates; socket_write overlaps send_to_receive. Bootstrap/redraw/invalid/dropped frames are excluded from steady presentation summaries. Presentation timestamps do not measure camera-visible pixel response.");
     return 0;

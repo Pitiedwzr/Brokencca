@@ -54,7 +54,7 @@ static void test_video_schedule(void) {
     assert(BCVideoBeginRender(&s,true));
     BCVideoGPUFinished(&s,&second,false);
     assert(s.gpu==0 && s.presenting==2 && !BCVideoRequestRender(&s,true));
-    BCVideoPresentationFinished(&s,&first); // next refresh can submit while second waits
+    BCVideoPresentationFinished(&s,&first); // a released slot wakes the newest pending frame
     assert(BCVideoRequestRender(&s,true));
     BCVideoPresentationFinished(&s,&second); second=(BCVideoRenderTicket){0};
     assert(BCVideoBeginRender(&s,true)); first=(BCVideoRenderTicket){0};
@@ -75,23 +75,25 @@ static void test_video_schedule(void) {
         BCVideoPresentationFinished(&s,&first); BCVideoGPUFinished(&s,&first,true); // late/duplicate callbacks
         assert(s.gpu==0 && s.presenting==0);
     }
-    // Device trace: presentation takes two refresh intervals. Admit one new
-    // frame each interval while keeping a strict two-drawable bound.
+    // Arrival and slot-release wakes need no refresh timestamp. Bursts remain
+    // coalesced and strictly bounded, even while the GPU finishes ahead of presentation.
     BCVideoRenderTicket refresh[2]={{0},{0}};
     for (int tick=0;tick<120;tick++) {
         int slot=tick%2;
         if (tick>=2) BCVideoPresentationFinished(&s,&refresh[slot]);
         refresh[slot]=(BCVideoRenderTicket){0};
-        assert(BCVideoRequestRender(&s,true)); assert(BCVideoBeginRefreshRender(&s,true,1000000+(uint64_t)tick*16667));
+        assert(BCVideoRequestRender(&s,true));
+        for (int burst=0;burst<1000;burst++) assert(!BCVideoRequestRender(&s,true));
+        assert(BCVideoBeginRender(&s,true));
         BCVideoGPUFinished(&s,&refresh[slot],false);
-        assert(!BCVideoBeginRefreshRender(&s,true,1000000+(uint64_t)tick*16667));
         assert(s.gpu==0 && s.presenting==(tick==0 ? 1u : 2u));
-        if (tick>0) assert(!BCVideoRequestRender(&s,true));
+        if (tick>0) {
+            assert(!BCVideoRequestRender(&s,true));
+            assert(!BCVideoBeginRender(&s,true));
+        }
     }
     BCVideoPresentationFinished(&s,&refresh[0]); BCVideoPresentationFinished(&s,&refresh[1]);
     assert(s.gpu==0 && s.presenting==0);
-    assert(!BCVideoBeginRefreshRender(&s,true,s.lastRefreshUs)); // callbacks can't reuse the previous refresh
-    assert(!BCVideoBeginRefreshRender(&s,true,s.lastRefreshUs-1)); // stale refresh
     BCVideoRenderSnapshot snapshot={1,2,3};
     assert(BCVideoRenderSnapshotCurrent(snapshot,1,2,3));
     assert(!BCVideoRenderSnapshotCurrent(snapshot,0,2,3)); // disconnected while acquiring a drawable
