@@ -2,10 +2,19 @@
 #import "BCVideoDecoder.h"
 #import "BCVideoWire.h"
 #import "BCVideoJson.h"
+#import "BCVideoRecovery.h"
 #import <Network/Network.h>
 #import <math.h>
 
 typedef NS_ENUM(NSUInteger, BCVideoPhase) { BCVideoWaitingHello, BCVideoWaitingConfig, BCVideoConfiguring, BCVideoStreaming };
+static NSString *BCThermalState(void) {
+    switch (NSProcessInfo.processInfo.thermalState) {
+        case NSProcessInfoThermalStateFair: return @"fair";
+        case NSProcessInfoThermalStateSerious: return @"serious";
+        case NSProcessInfoThermalStateCritical: return @"critical";
+        default: return @"nominal";
+    }
+}
 static BOOL BCNumber(id value, double minimum, double maximum, BOOL integer) {
     if (![value isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)value)==CFBooleanGetTypeID()) return NO;
     double x=[value doubleValue]; return isfinite(x) && x>=minimum && x<=maximum && (!integer || floor(x)==x);
@@ -53,9 +62,15 @@ static BOOL BCConfig(NSDictionary *c) {
 @property(nonatomic) uint32_t incoming, outgoing;
 @property(nonatomic) BOOL haveIncoming, haveIdr, failing;
 @property(nonatomic) BOOL frameTiming;
+@property(nonatomic) BOOL receiving;
+@property(nonatomic) uint64_t blockedAUReceivedUs;
 @property(nonatomic) uint64_t generation, lastGeneration, lastReceived, lastDecoded, lastPresented, presentedAt;
 @property(nonatomic) NSTimeInterval lastMessage, partialSince, phaseSince, lastReport;
 @property(nonatomic) NSUInteger pendingWrites, decodedCount, receivedCount, presentedCount;
+- (void)parse;
+- (void)receive:(nw_connection_t)connection;
+- (void)requestRecovery:(NSString *)reason;
+- (void)fail:(NSString *)reason code:(NSString *)code;
 @end
 
 @implementation BCVideoTransport
@@ -70,19 +85,26 @@ static BOOL BCConfig(NSDictionary *c) {
             BCVideoTransport *s=weakSelf;
             if (!s) { CVPixelBufferRelease(buffer); return; }
             dispatch_async(s.queue, ^{
-                if (s.connection && s.generation==generation && s.phase==BCVideoStreaming) {
+                if (s.connection && !s.failing && s.generation==generation && s.phase==BCVideoStreaming) {
                     [s.pending removeObjectForKey:@(frame)];
                     if (frame>s.lastDecoded) {
-                        s.lastDecoded=frame; s.decodedCount++; timing.readyUs=BCVideoNowUs();
-                        [s.videoView enqueueBuffer:buffer frame:frame generation:generation geometry:geometry timing:timing];
+                        s.lastDecoded=frame; s.decodedCount++;
+                        uint64_t nowUs=BCVideoNowUs();
+                        if (BCVideoDecodedFrameFresh(timing.receivedUs,nowUs)) {
+                            timing.readyUs=nowUs;
+                            [s.videoView enqueueBuffer:buffer frame:frame generation:generation geometry:geometry timing:timing];
+                        } else [timing dropped:@"decode-late"];
                     } else [timing dropped:@"stale-decode"];
+                    // Resume parsing buffered AUs before requesting more TCP data.
+                    [s parse];
+                    if (s.connection && !s.failing) [s receive:s.connection];
                 } else [timing dropped:@"generation-retired"];
                 CVPixelBufferRelease(buffer);
             });
         };
         _decoder.failed=^(NSString *reason,uint64_t generation) {
             BCVideoTransport *s=weakSelf; if (!s) return;
-            dispatch_async(s.queue, ^{ if (s.connection && s.generation==generation) [s fail:reason]; });
+            dispatch_async(s.queue, ^{ if (s.connection && s.generation==generation) [s requestRecovery:reason]; });
         };
     }
     return self;
@@ -129,9 +151,10 @@ static BOOL BCConfig(NSDictionary *c) {
 }
 - (void)accept:(nw_connection_t)connection {
     self.connection=connection; self.received=[NSMutableData data]; self.phase=BCVideoWaitingHello;
-    self.generation=0; self.incoming=self.outgoing=0; self.haveIncoming=self.haveIdr=self.failing=NO;
+    self.generation=0; self.incoming=self.outgoing=0; self.haveIncoming=self.haveIdr=self.failing=self.receiving=NO;
     self.lastReceived=self.lastDecoded=self.lastPresented=self.presentedAt=0; self.pendingWrites=0;
     self.lastMessage=self.phaseSince=NSProcessInfo.processInfo.systemUptime; self.partialSince=0;
+    self.blockedAUReceivedUs=0;
     [self.pending removeAllObjects];
     nw_connection_set_queue(connection,self.queue); __weak BCVideoTransport *weakSelf=self;
     nw_connection_set_state_changed_handler(connection, ^(nw_connection_state_t state,nw_error_t error) {
@@ -141,9 +164,12 @@ static BOOL BCConfig(NSDictionary *c) {
     }); nw_connection_start(connection);
 }
 - (void)receive:(nw_connection_t)connection {
+    if (self.connection!=connection || self.receiving || self.failing || self.pending.count>=BCVideoDecodeSlots) return;
+    self.receiving=YES;
     __weak BCVideoTransport *weakSelf=self;
     nw_connection_receive(connection,1,65536,^(dispatch_data_t content,nw_content_context_t context,bool complete,nw_error_t error) {
         BCVideoTransport *s=weakSelf; if (!s || s.connection!=connection) return;
+        s.receiving=NO;
         if (content) {
             if (!s.received.length) s.partialSince=NSProcessInfo.processInfo.systemUptime;
             dispatch_data_apply(content,^bool(dispatch_data_t region,size_t offset,const void *bytes,size_t length) {
@@ -165,6 +191,14 @@ static BOOL BCConfig(NSDictionary *c) {
         uint64_t receivedUs=BCVideoNowUs();
         uint8_t type=p[5]; BOOL idr=p[6]!=0; uint32_t sequence=BCGet32(p+12);
         uint64_t generation=BCGet64(p+16),frame=BCGet64(p+24),captured=BCGet64(p+32);
+        // Leave the next AU intact until a decode slot is released. Never drop
+        // reference pictures or grow the decode submission queue to hide a stall.
+        if (type==BCVideoAU && self.pending.count>=BCVideoDecodeSlots) {
+            if (!self.blockedAUReceivedUs) self.blockedAUReceivedUs=receivedUs;
+            return;
+        }
+        if (type==BCVideoAU && self.blockedAUReceivedUs) receivedUs=self.blockedAUReceivedUs;
+        self.blockedAUReceivedUs=0;
         if (self.haveIncoming && (int32_t)(sequence-self.incoming)<=0) { [self fail:@"Stale video sequence"]; return; }
         self.haveIncoming=YES; self.incoming=sequence;
         NSData *payload=[NSData dataWithBytes:p+BCVideoHeaderSize length:total-BCVideoHeaderSize];
@@ -185,6 +219,10 @@ static BOOL BCConfig(NSDictionary *c) {
             id timing=json[@"frameTiming"];
             if (timing && (![timing isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)timing)!=CFBooleanGetTypeID())) { [self fail:@"Invalid frame timing option"]; return; }
             self.frameTiming=[timing boolValue];
+            NSString *thermal=BCThermalState();
+            if ([thermal isEqual:@"serious"] || [thermal isEqual:@"critical"]) {
+                [self fail:thermal code:@"thermal-limit"]; return;
+            }
             [self send:BCVideoHelloAck json:@{@"maxWidth":@1920,@"maxHeight":@1920,@"maxPixels":@2073600,@"maxFps":@60,@"maxAuBytes":@(BCVideoMaxAU),@"profiles":@[@"main",@"baseline"],@"maxLevel":@42}];
             self.phase=BCVideoWaitingConfig; self.phaseSince=self.lastMessage; continue;
         }
@@ -220,11 +258,11 @@ static BOOL BCConfig(NSDictionary *c) {
             if ([json[@"state"] isEqual:@"paused"] || [json[@"state"] isEqual:@"stopped"]) [self notify:json[@"reason"]];
             continue;
         }
-        if (type!=BCVideoAU || captured>INT64_MAX || frame<=self.lastReceived || !BCValidAvcc(payload.bytes,payload.length,idr) || (!self.haveIdr && !idr) || self.pending.count>=3) {
-            [self fail:@"Invalid picture, reference, or decode backlog"]; return;
+        if (type!=BCVideoAU || captured>INT64_MAX || frame<=self.lastReceived || !BCValidAvcc(payload.bytes,payload.length,idr) || (!self.haveIdr && !idr)) {
+            [self fail:@"Invalid picture or reference"]; return;
         }
         self.haveIdr=YES; self.lastReceived=frame; self.receivedCount++;
-        self.pending[@(frame)]=@(NSProcessInfo.processInfo.systemUptime);
+        self.pending[@(frame)]=@(BCVideoNowUs());
         BCVideoTiming *timing=[BCVideoTiming new]; timing.frame=frame; timing.generation=generation;
         timing.capturedUs=captured; timing.receivedUs=receivedUs; timing.enabled=self.frameTiming;
         [self.decoder decode:payload timing:timing];
@@ -258,14 +296,14 @@ static BOOL BCConfig(NSDictionary *c) {
         (self.phase!=BCVideoStreaming && now-self.phaseSince>3.0) || (self.phase==BCVideoStreaming && !self.haveIdr && now-self.phaseSince>3.0)) {
         [self fail:@"Video timed out"]; return;
     }
-    for (NSNumber *started in self.pending.allValues) if (now-started.doubleValue>0.05) { [self fail:@"Video decode queue too old"]; return; }
     if (self.phase!=BCVideoStreaming) return;
-    NSString *thermal=@"nominal";
-    switch (NSProcessInfo.processInfo.thermalState) {
-        case NSProcessInfoThermalStateFair: thermal=@"fair"; break;
-        case NSProcessInfoThermalStateSerious: thermal=@"serious"; break;
-        case NSProcessInfoThermalStateCritical: thermal=@"critical"; break;
-        default: break;
+    NSString *thermal=BCThermalState();
+    if ([thermal isEqual:@"serious"] || [thermal isEqual:@"critical"]) {
+        [self fail:thermal code:@"thermal-limit"]; return;
+    }
+    uint64_t nowUs=BCVideoNowUs();
+    for (NSNumber *started in self.pending.allValues) if (BCVideoDecodeStalled(started.unsignedLongLongValue,nowUs)) {
+        [self requestRecovery:@"Decode stalled beyond 150 ms"]; return;
     }
     NSDictionary *stats=[self.videoView statistics];
     [self send:BCVideoFeedback json:@{@"receivedId":[NSString stringWithFormat:@"%llu",(unsigned long long)self.lastReceived],
@@ -293,16 +331,30 @@ static BOOL BCConfig(NSDictionary *c) {
     };
 }
 - (void)fail:(NSString *)reason {
+    [self fail:reason code:@"invalid-stream"];
+}
+- (void)requestRecovery:(NSString *)reason {
     if (self.failing) return; self.failing=YES;
-    [self notify:[@"Video paused · " stringByAppendingString:reason ?: @"error"]];
+    [self notify:@"Video recovering · requesting fresh keyframe"];
+    NSLog(@"BCCA_VIDEO recovery=decoder reason=%@ pending=%lu",reason,(unsigned long)self.pending.count);
+    nw_connection_t connection=self.connection; __weak BCVideoTransport *weakSelf=self;
+    [self send:BCVideoRequestIDR json:@{@"reason":@"decode-error"} completion:^{
+        BCVideoTransport *s=weakSelf; if (s.connection==connection) [s disconnect];
+    }];
+}
+- (void)fail:(NSString *)reason code:(NSString *)code {
+    if (self.failing) return; self.failing=YES;
+    [self notify:[code isEqual:@"thermal-limit"] ? @"Video cooling down · resumes automatically" :
+        [@"Video paused · " stringByAppendingString:reason ?: @"error"]];
     nw_connection_t connection=self.connection;
     __weak BCVideoTransport *weakSelf=self;
-    [self send:BCVideoError json:@{@"code":@"invalid-stream",@"detail":reason ?: @"Video failed"} completion:^{
+    [self send:BCVideoError json:@{@"code":code,@"detail":reason ?: @"Video failed"} completion:^{
         BCVideoTransport *s=weakSelf; if (s.connection==connection) [s disconnect];
     }];
 }
 - (void)disconnect {
     nw_connection_t connection=self.connection; self.connection=nil; self.generation=0; self.received=nil;
+    self.receiving=NO; self.blockedAUReceivedUs=0;
     [self.pending removeAllObjects]; [self.videoView clear]; [self.decoder stop];
     if (connection) { nw_connection_set_state_changed_handler(connection,NULL); nw_connection_cancel(connection); }
 }

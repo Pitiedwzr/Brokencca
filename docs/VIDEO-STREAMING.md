@@ -289,8 +289,8 @@ within 500 ms. No WGC arrivals alone cannot distinguish a static window from a
 frozen source; diagnostics must state that limitation. App suspension cancels
 all sockets and releases touches; normal foreground resume starts fresh.
 
-For recoverable video failure, retry at 250 ms, 500 ms, then 1 s; cap at three
-consecutive failures and leave video disabled with manual retry available.
+For recoverable video failure, retry after 250 ms, then 500 ms; cap at three
+consecutive failures and leave video disabled until the host/control session restarts.
 Reset the failure count after 30 seconds of healthy streaming. A GPU device loss
 recreates capture/converter/encoder together using existing capture recovery
 rules. Preserve window identity checks and require selection after source exit.
@@ -311,6 +311,13 @@ guards, not changes to input transition semantics or the existing reset policy.
 Include optional LEDs in USB contention tests; separate sockets do not reserve
 bandwidth. Serious/critical iOS thermal state reduces resolution or suspends
 video; report power/thermal/display limits instead of claiming stable 60 fps.
+Build 12 treats serious/critical thermal state as a separate cooldown condition.
+The iPad returns ERROR `thermal-limit` with detail `serious`/`critical`, including
+at authenticated HELLO before capture/encoder startup. The host waits five seconds
+between probes without consuming failure retries; nominal/fair resumes a fresh
+generation at at most 960 long edge / 6 Mbps. There is no automatic upscale during
+that control session. Cancellation interrupts cooldown immediately; input and LED
+processing remain independent. Both host and IPA must understand the new error code.
 
 ## iOS decoder, rendering, and touch alignment
 
@@ -320,6 +327,14 @@ VideoToolbox, CoreMedia, CoreVideo, Metal, MetalKit, and QuartzCore in
 `ios/project.yml`. Keep Network.framework work and H.264 parsing off the main
 thread. Bound outstanding decode callbacks and retain each sample's bytes and
 frame context until its completion; ignore callbacks from retired generations.
+Build 12 retains three decode slots. A full window pauses AU parsing and further
+TCP reads, preserving references and bounding submissions; callbacks drain the
+buffered AUs before resuming reads, with at most one receive in flight. A complete
+AU held at the parser preserves its original observation timestamp. Decode output
+over 50 ms old is logged `decode-late` and omitted from rendering. A pending decode
+over 150 ms, or a decoder error, sends REQUEST_IDR (`decode-error`) and disconnects
+after sending; the host starts a fresh CONFIG/IDR at the same quality. These resets
+share the three-failure budget, so an unrecoverable decoder cannot restart forever.
 
 Create `CMVideoFormatDescription` using the two H.264 parameter sets and a
 four-byte NAL header length, then `CMSampleBuffer`/`VTDecompressionSession`.

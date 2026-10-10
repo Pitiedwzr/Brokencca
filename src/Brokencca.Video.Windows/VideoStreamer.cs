@@ -16,27 +16,33 @@ public sealed record VideoOptions(WindowIdentity Source, CaptureProfile Profile,
 public static class VideoStreamer
 {
     private sealed class InputOverloadException() : IOException("Video stopped because input queue age/depth exceeded its protection budget.");
+    private sealed class ThermalCooldownException(string state) : IOException("iOS thermal limit: " + state);
+    private sealed class DecoderRecoveryException(string reason) : IOException("iOS requested a fresh IDR generation: " + reason);
     private static long generations, frameIds;
     private sealed record Frame(ulong Id, ulong CaptureUs, byte[] Bytes, bool Idr, byte[] Config, long Enqueued,
         long AcquiredUs, long SubmittedUs, long EncodedUs);
     private sealed class PipelineState { public volatile string Status = "source-idle"; }
     public static async Task RunAsync(VideoOptions options, ReadOnlyMemory<byte> sessionToken, CancellationToken token)
     {
-        int bitrate = options.Bitrate, longEdge = options.LongEdge;
-        for (int attempt = 0; attempt < 3 && !token.IsCancellationRequested; attempt++)
+        var recovery = new VideoRecoveryPolicy(options.Bitrate, options.LongEdge);
+        while (!token.IsCancellationRequested)
         {
             long started = Stopwatch.GetTimestamp();
-            try { await ConnectionAsync(options with { Bitrate = bitrate, LongEdge = longEdge }, sessionToken, token); }
+            VideoRecoveryReason reason = VideoRecoveryReason.Failure;
+            try { await ConnectionAsync(options with { Bitrate = recovery.Bitrate, LongEdge = recovery.LongEdge }, sessionToken, token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
             catch (Exception e)
             {
-                Console.Error.WriteLine(JsonSerializer.Serialize(new { kind = "video_failure", attempt = attempt + 1, message = e.Message, input_preserved = true }));
+                reason = e is ThermalCooldownException ? VideoRecoveryReason.Thermal :
+                    e is DecoderRecoveryException ? VideoRecoveryReason.Decoder : VideoRecoveryReason.Failure;
+                Console.Error.WriteLine(JsonSerializer.Serialize(new { kind = reason == VideoRecoveryReason.Thermal ? "video_cooldown" : "video_failure",
+                    attempt = recovery.Failures + 1, message = e.Message, retry_after_ms = reason == VideoRecoveryReason.Thermal ? 5000 : (int?)null, input_preserved = true }));
                 if (e is DllNotFoundException or EntryPointNotFoundException or PlatformNotSupportedException or ArgumentException or InputOverloadException) break;
             }
-            if (Stopwatch.GetElapsedTime(started).TotalSeconds >= 30) attempt = -1;
-            bitrate = Math.Max(6_000_000, bitrate * 3 / 4);
-            if (bitrate == 6_000_000) longEdge = longEdge > 1280 ? 1280 : 960;
-            await Task.Delay(attempt <= 0 ? 250 : 500, token);
+            int? delay = recovery.RetryDelayMs(reason, Stopwatch.GetElapsedTime(started).TotalSeconds);
+            if (delay is null) break;
+            try { await Task.Delay(delay.Value, token); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
         }
         if (!token.IsCancellationRequested) Console.Error.WriteLine("Video disabled after repeated failures. Input remains active; restart the host to retry video.");
     }
@@ -80,7 +86,13 @@ public static class VideoStreamer
             }
             if (havePrevious && unchecked((int)(message.Sequence - previous)) <= 0) throw new InvalidDataException("Stale video peer sequence.");
             previous = message.Sequence; havePrevious = true;
-            if (message.Type == VideoMessageType.Error) throw new IOException("iOS video error: " + System.Text.Encoding.UTF8.GetString(message.Payload));
+            if (message.Type == VideoMessageType.Error)
+            {
+                using JsonDocument error = JsonDocument.Parse(message.Payload);
+                if (error.RootElement.GetProperty("code").GetString() == "thermal-limit")
+                    throw new ThermalCooldownException(error.RootElement.GetProperty("detail").GetString()!);
+                throw new IOException("iOS video error: " + System.Text.Encoding.UTF8.GetString(message.Payload));
+            }
             return message;
         }
         var helloBody = new Dictionary<string, object> { ["sessionToken"] = Convert.ToHexString(sessionToken.Span), ["videoVersion"] = 1 };
@@ -95,6 +107,7 @@ public static class VideoStreamer
         Task producer = Task.Factory.StartNew(() => Produce(options, channel.Writer, ready, state, child.Token),
             CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         Task? receiver = null;
+        Exception? feedbackFailure = null;
         try
         {
             Frame bootstrap = await ReadFrame(channel.Reader, 3000, child.Token);
@@ -133,7 +146,11 @@ public static class VideoStreamer
                     {
                         VideoMessage feedback = await Receive(1000);
                         if (feedback.Generation != generation) throw new InvalidDataException("Video feedback generation changed.");
-                        if (feedback.Type == VideoMessageType.RequestIdr) throw new IOException("iOS requested a fresh IDR generation.");
+                        if (feedback.Type == VideoMessageType.RequestIdr)
+                        {
+                            using JsonDocument request = JsonDocument.Parse(feedback.Payload);
+                            throw new DecoderRecoveryException(request.RootElement.GetProperty("reason").GetString()!);
+                        }
                         if (feedback.Type == VideoMessageType.Error) throw new IOException("iOS video error: " + System.Text.Encoding.UTF8.GetString(feedback.Payload));
                         if (feedback.Type == VideoMessageType.ClockPong)
                         {
@@ -166,6 +183,7 @@ public static class VideoStreamer
                         Volatile.Write(ref thermal, f.GetProperty("thermal").GetString()!);
                     }
                 }
+                catch (Exception e) { Volatile.Write(ref feedbackFailure,e); throw; }
                 finally { child.Cancel(); client.Close(); }
             }, CancellationToken.None);
             bool initialIdr = false;
@@ -201,7 +219,7 @@ public static class VideoStreamer
                     sent++; bytes += next.Bytes.Length;
                 }
                 else await Send(VideoMessageType.Status, JsonSerializer.SerializeToUtf8Bytes(new { state = state.Status, reason = state.Status == "paused" ? "Source minimized or unavailable" : "Waiting for source update" }));
-                if (Volatile.Read(ref thermal) is "serious" or "critical") throw new IOException("iOS thermal limit: " + thermal);
+                if (Volatile.Read(ref thermal) is "serious" or "critical") throw new ThermalCooldownException(thermal);
                 VideoPresentationHealth health = presentationWatchdog.Evaluate(MonotonicUs());
                 if (health == VideoPresentationHealth.FirstFrameTimedOut)
                     throw new IOException("iOS did not present the first video frame.");
@@ -218,6 +236,14 @@ public static class VideoStreamer
                 }
             }
             if (receiver is not null) await receiver;
+        }
+        catch (Exception) when (!token.IsCancellationRequested && Volatile.Read(ref feedbackFailure) is not null)
+        {
+            // Publish the feedback failure before cancelling/closing the sender.
+            // Preserve a thermal/IDR response even when socket I/O or channel
+            // cancellation wins the race to throw on the sender thread.
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(Volatile.Read(ref feedbackFailure)!).Throw();
+            throw;
         }
         catch (ChannelClosedException e) when (e.InnerException is not null)
         {

@@ -7,6 +7,7 @@
 #include "../ios/Brokencca/BCVideoJson.h"
 #include "../ios/Brokencca/BCVideoLayout.h"
 #include "../ios/Brokencca/BCVideoSchedule.h"
+#include "../ios/Brokencca/BCVideoRecovery.h"
 #include "../ios/Brokencca/BCLed.h"
 
 static void test_video_layout(void) {
@@ -111,6 +112,16 @@ static void test_video_schedule(void) {
 }
 
 int main(void) {
+    // The ASAP trace includes a 105 ms decode spike. It must not tear down the
+    // stream at 50 ms, but late output must not replay and sustained stalls recover.
+    assert(!BCVideoDecodeStalled(1000000,1105000));
+    assert(!BCVideoDecodeStalled(1000000,1150000));
+    assert(BCVideoDecodeStalled(1000000,1150001));
+    assert(!BCVideoDecodeStalled(0,2000000));
+    assert(BCVideoDecodedFrameFresh(1000000,1050000));
+    assert(!BCVideoDecodedFrameFresh(1000000,1105000));
+    assert(!BCVideoDecodedFrameFresh(1000000,999999));
+    assert(BCVideoDecodeSlots==3); // feedback protocol and retained references stay bounded
     test_video_layout();
     test_video_schedule();
     const char *good_ready = "{\"hardwareVerified\":false}";

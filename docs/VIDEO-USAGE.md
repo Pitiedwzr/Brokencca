@@ -69,11 +69,30 @@ iproxy -l 24864:24864 24865:24865
 
 Add `24866:24866` for optional LEDs. Video binds to the active control token;
 input heartbeats and processing continue independently. Negotiation, encoder,
-network, decode or presentation failure closes only video and retries with a
-fresh CONFIG/IDR at reduced settings, up to three attempts. Input queue age over
-20 ms or depth at least 48 stops video for the current control session. Thermal
-serious/critical status also triggers video recovery. Restart the host after
-video disables itself. These are provisional protection budgets for testing.
+network or presentation failure closes only video and retries with a fresh
+CONFIG/IDR at reduced settings, up to three consecutive failures. Decoder recovery
+requests retain the current quality and share that failure budget, which resets
+after 30 seconds of streaming. Input queue age over 20 ms or depth at least 48
+stops video for the current control session. Restart the host after video disables
+itself for repeated nonthermal failures.
+
+Build 12 changes serious/critical thermal handling to **cooldown with automatic
+resume**. Video pauses and the host probes every five seconds without consuming
+failure retries. A hot iPad rejects video HELLO before capture/encoding starts;
+once thermal state is nominal/fair, streaming resumes at a long edge of at most
+960 pixels and at most 6 Mbps, still requesting 60 fps. Lower settings stay lower.
+The iOS status says it is cooling down, and host logs use `video_cooldown`.
+Install both the updated host and build-12 IPA: older hosts do not recognize the
+new `thermal-limit` error. Input remains active throughout cooldown.
+
+The decoder still allows only three outstanding frames. At capacity, parsing and
+TCP reads pause until a decode callback releases a slot, retaining every H.264
+reference picture. Output older than 50 ms is logged as `decode-late` and omitted
+from display. A pending decode over 150 ms requests a fresh IDR generation;
+actual decoder errors also request recovery. Brief stalls can catch up without
+restarting video or progressively lowering quality. Retest gameplay, freezes,
+thermal cooldown/resume and wire reconnects with `--video-diagnostics`; these
+protection budgets still require device validation.
 
 ## Touch area during video
 

@@ -65,8 +65,10 @@ public static class VideoJson
                 String(root, "reason", 256); break;
             case VideoMessageType.Error:
                 Fields(root, "code", "detail");
-                OneOf(root, "code", "unsupported-config", "hardware-unavailable", "invalid-stream", "internal");
-                String(root, "detail", 256); break;
+                OneOf(root, "code", "unsupported-config", "hardware-unavailable", "invalid-stream", "internal", "thermal-limit");
+                String(root, "detail", 256);
+                if (root.GetProperty("code").GetString() == "thermal-limit") OneOf(root,"detail","serious","critical");
+                break;
             default: Bad("Unknown video JSON message."); break;
         }
     }

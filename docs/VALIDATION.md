@@ -447,6 +447,45 @@ its analyzer processed all 13,496 matched playing-2 records with zero invalid
 frames, preserving the 11,671 steady presentations and older-log metadata.
 No build-11 performance improvement is claimed locally.
 
+The build-11 ASAP retest (`game_video_playing_ASAP.log` and
+`ios_game_video_playing_ASAP.log`) contains 30,741 matched frame identities after
+excluding iOS records outside the host capture identities. Of 30,231 valid steady
+presentations, median acquisition-to-presentation is 32.570 ms (p95 43.700 ms),
+ready-to-render 0.043 ms, and GPU-to-presentation 22.240 ms. Resolution, bitrate
+and Low Power Mode vary, so this is not a controlled comparison to playing-2.
+There are 35 invalid timing records, four replacements and 448 not-presented
+outcomes. The user reports intermittent freezes and a final persistent freeze;
+early wire disconnects/reconnects were intentional. Recorded recovery triggers
+include two decode-age failures, a subsequent decoder backlog/picture rejection,
+one presentation stall, and repeated serious thermal errors. At approximately
+13:27:42 the iPad reports serious thermal state; retries exhaust and the host
+explicitly disables video, including after a subsequent reconnect.
+
+Build 12 addresses thermal and decoder recovery while retaining ASAP rendering.
+Thermal pauses use cancellable five-second probes, never exhaust the retry budget,
+and reject hot-device HELLO before capture/encoding. Recovery resumes at at most
+960 long edge / 6 Mbps after nominal/fair returns. A three-slot decoder window
+applies network backpressure instead of rejecting a valid burst, skips display
+of decoded output older than 50 ms, and requests a fresh IDR generation for
+pending decode age over 150 ms or actual decoder failure. Decoder resets retain
+quality and remain bounded by the normal failure budget. The feedback failure
+is preserved before socket cancellation so a racing sender exception cannot
+misclassify a thermal pause.
+
+Local validation: 40/40 C# regressions and portable C checks pass. Tests include
+prolonged thermal probes without exhausting recovery, retained decoder quality,
+bounded genuine failures, healthy-session reset, no increase of lower settings,
+strict thermal error validation, and real loopback serious/critical HELLO rejection
+with no capture/encoder startup and prompt cooldown cancellation. Portable checks
+cover the observed 105 ms spike, the 150 ms stall boundary and late-frame display
+suppression. The iOS Network.framework receive/resume path, actual decoder stalls,
+cooldown/resume, lifecycle alignment and sustained device performance still require
+GitHub Actions compilation and an iPad run with the matching build-12 IPA/host.
+The self-contained host/probe/analyzer and native video DLL publish succeeded
+in `artifacts/windows-build12`. The default `artifacts/windows` publish was
+blocked by a DLL held by an existing VideoTiming process; use the complete
+build-12 directory or the GitHub Actions artifact for the next test.
+
 The real-game baseline (RX 6650 XT, portrait 720x1280, iPad mini 5, input hook
 and LEDs enabled) covers about 46 seconds and 2,571 matched traces. Acquisition
 to presentation is 36.271 ms median / 53.034 ms p95; conversion/encoding is

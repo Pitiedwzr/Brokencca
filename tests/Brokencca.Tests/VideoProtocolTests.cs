@@ -82,6 +82,11 @@ internal static class VideoProtocolTests
             """);
         var config = new VideoMessage(VideoMessageType.Config, 1, 1, 0, 0, validConfig);
         VideoProtocol.Encode(config);
+        var thermal = new VideoMessage(VideoMessageType.Error,0,0,0,0,
+            Encoding.UTF8.GetBytes("{\"code\":\"thermal-limit\",\"detail\":\"serious\"}"));
+        VideoProtocol.Encode(thermal);
+        Reject(() => VideoProtocol.Encode(thermal with { Payload=Encoding.UTF8.GetBytes("{\"code\":\"thermal-limit\",\"detail\":\"nominal\"}") }));
+        VideoProtocol.Encode(new(VideoMessageType.RequestIdr,1,1,0,0,Encoding.UTF8.GetBytes("{\"reason\":\"decode-error\"}")));
         string clipped = Encoding.UTF8.GetString(validConfig).Replace("[0,0,1,1]", "[0.1,0.1,0.8,0.8]");
         Reject(() => VideoProtocol.Encode(config with { Payload = Encoding.UTF8.GetBytes(clipped) }));
     }
