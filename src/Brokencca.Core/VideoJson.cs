@@ -12,17 +12,25 @@ public static class VideoJson
         {
             case VideoMessageType.Hello:
                 bool timing = root.TryGetProperty("frameTiming", out JsonElement timingValue);
+                bool settings = root.TryGetProperty("settingsVersion", out _);
+                var helloFields = new List<string> { "sessionToken", "videoVersion" };
+                if (timing) helloFields.Add("frameTiming");
+                if (settings) helloFields.Add("settingsVersion");
+                Fields(root, helloFields.ToArray());
                 if (timing) {
-                    Fields(root, "sessionToken", "videoVersion", "frameTiming");
                     if (timingValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False)) Bad("Invalid frame timing option.");
                 }
-                else Fields(root, "sessionToken", "videoVersion");
+                if (settings) Equal(root, "settingsVersion", 1);
                 string token = String(root, "sessionToken", 32);
                 if (token.Length != 32 || !token.All(Uri.IsHexDigit)) Bad("Invalid session token.");
                 Equal(root, "videoVersion", 1);
                 break;
             case VideoMessageType.HelloAck:
-                Fields(root, "maxWidth", "maxHeight", "maxPixels", "maxFps", "maxAuBytes", "profiles", "maxLevel");
+                if (root.TryGetProperty("settingsVersion", out _)) {
+                    Fields(root, "maxWidth", "maxHeight", "maxPixels", "maxFps", "maxAuBytes", "profiles", "maxLevel", "settingsVersion", "bitrateBps", "autoReduce");
+                    Equal(root,"settingsVersion",1); ValidatePreferences(root);
+                }
+                else Fields(root, "maxWidth", "maxHeight", "maxPixels", "maxFps", "maxAuBytes", "profiles", "maxLevel");
                 Int(root, "maxWidth", 1, 1920); Int(root, "maxHeight", 1, 1920);
                 Int(root, "maxPixels", 1, 2_073_600); Int(root, "maxFps", 1, 60);
                 Int(root, "maxAuBytes", 65_536, VideoProtocol.MaxAccessUnit);
@@ -53,6 +61,8 @@ public static class VideoJson
                 break;
             case VideoMessageType.RequestIdr:
                 Fields(root, "reason"); OneOf(root, "reason", "decode-error", "missing-reference", "stale"); break;
+            case VideoMessageType.Settings:
+                Fields(root,"bitrateBps","autoReduce"); ValidatePreferences(root); break;
             case VideoMessageType.ClockPing:
                 Fields(root, "t1Us"); Decimal(root, "t1Us"); break;
             case VideoMessageType.ClockPong:
@@ -71,6 +81,13 @@ public static class VideoJson
                 break;
             default: Bad("Unknown video JSON message."); break;
         }
+    }
+
+    private static void ValidatePreferences(JsonElement root)
+    {
+        long bitrate = Int(root,"bitrateBps",0,20_000_000);
+        if (bitrate is > 0 and < 6_000_000) Bad("Preferred bitrate must be zero or 6–20 Mbps.");
+        if (root.GetProperty("autoReduce").ValueKind is not (JsonValueKind.True or JsonValueKind.False)) Bad("Invalid automatic reduction option.");
     }
 
     private static void ValidateConfig(JsonElement root)

@@ -196,8 +196,8 @@ smaller negotiated receiver cap. These limits are independent of control v1.
 
 | Type | Direction | Payload and rule |
 | --- | --- | --- |
-| HELLO = 1 | Windows -> iOS | `sessionToken`: 32 hex characters; `videoVersion`: 1; optional Boolean `frameTiming` enables per-frame diagnostic logs on build-7+ IPA |
-| HELLO_ACK = 2 | iOS -> Windows | `maxWidth`, `maxHeight` (1..1920), `maxPixels` (1..2073600), `maxFps` (1..60), `maxAuBytes` (65536..2097152), `profiles` (array of 1..2 values: `main`, `baseline`), `maxLevel` (H.264 level_idc, 1..42). Advertised bounds must have been probed; actual CONFIG still requires decoder creation |
+| HELLO = 1 | Windows -> iOS | `sessionToken`: 32 hex characters; `videoVersion`: 1; optional Boolean `frameTiming` enables per-frame diagnostic logs; optional `settingsVersion`: 1 negotiates app preferences (build 13) |
+| HELLO_ACK = 2 | iOS -> Windows | `maxWidth`, `maxHeight` (1..1920), `maxPixels` (1..2073600), `maxFps` (1..60), `maxAuBytes` (65536..2097152), `profiles` (array of 1..2 values: `main`, `baseline`), `maxLevel` (H.264 level_idc, 1..42). With negotiated settings, also `settingsVersion`: 1, `bitrateBps`: 0 (host default) or 6000000..20000000, and Boolean `autoReduce`; these three fields must appear together. Actual CONFIG still requires decoder creation |
 | CONFIG = 3 | Windows -> iOS | Exact schema below; starts the nonzero generation |
 | READY = 4 | iOS -> Windows | `hardwareVerified`: Boolean; true on iOS 17+ after requiring/verifying hardware, false on iOS 15–16 after checking H.264 hardware capability. Generation matches CONFIG; decoder/renderer configuration must succeed |
 | AU = 5 | Windows -> iOS | One complete progressive picture/access unit, length-prefixed NAL units, with header frame ID and capture time |
@@ -206,7 +206,8 @@ smaller negotiated receiver cap. These limits are independent of control v1.
 | CLOCK_PING = 8 | Windows -> iOS | `t1Us` host send time; at most once per second after initial sampling |
 | CLOCK_PONG = 9 | iOS -> Windows | Echo `t1Us`, plus `t2Us` receive and `t3Us` send times from iOS monotonic clock |
 | STATUS = 10 | Windows -> iOS | `state`: `running`, `source-idle`, `paused`, or `stopped`; `reason`: UTF-8 text <=256 bytes. At least every 250 ms when no AU is sent |
-| ERROR = 11 | Either | `code`: `unsupported-config`, `hardware-unavailable`, `invalid-stream`, or `internal`; `detail` <=256 UTF-8 bytes. Best effort, then close video only |
+| ERROR = 11 | Either | `code`: `unsupported-config`, `hardware-unavailable`, `invalid-stream`, `internal`, or `thermal-limit` (detail `serious`/`critical`); `detail` <=256 UTF-8 bytes. Best effort, then close video only |
+| SETTINGS = 12 | iOS -> Windows | Negotiated app preferences: `bitrateBps` (0 or 6000000..20000000), Boolean `autoReduce`; current nonzero generation |
 
 CONFIG fields are `codec="h264"`, `profile`, `level`, `codedWidth`, `codedHeight`,
 `fpsNum=60`, `fpsDen=1`, `bitrateBps` (4000000..20000000), `nalLengthBytes=4`,
@@ -261,7 +262,7 @@ depths; normal operation should have close to zero waiting frames.
 | NV12/encoder input | Four owned surfaces; at most three accepted inputs without matching output | Admit latest available raw frame only; skip raw frames older than 33 ms; no free sample means skip admission |
 | Encoded send | At most two AUs including active send, combined <=4 MiB; oldest enqueue age <=50 ms | Cancel/close video and restart generation; never remove one reference AU and keep its dependents |
 | One socket write | <=100 ms to write a complete framed message | Timeout closes socket even after a partial write; do not continue framing on it |
-| iOS receive/decode | One partial AU plus at most three complete outstanding AUs including VT submissions, <=8 MiB compressed total | Close/recover at IDR if full or complete AU waits >50 ms; no arbitrary compressed-frame dropping |
+| iOS receive/decode | One partial AU plus at most three complete outstanding AUs including VT submissions, <=8 MiB compressed total | Pause parsing/TCP reads when full; omit decoded output older than 50 ms; recover at IDR if pending decode exceeds 150 ms; preserve compressed reference frames |
 | Decoded/render | One latest pending pixel buffer, one retained displayed buffer for rotation, at most two drawables awaiting presentation and two GPU submissions | Select newest buffer once per display refresh; replace old pending frame, skip drawing if capacity/drawable unavailable; release GPU and presentation ownership separately |
 | Feedback accounting | <=32 frame timing entries or 500 ms, whichever first | Missing correlation is reported; 250 ms without forward presentation progress during moving-source streaming triggers recovery |
 
@@ -295,14 +296,21 @@ Reset the failure count after 30 seconds of healthy streaming. A GPU device loss
 recreates capture/converter/encoder together using existing capture recovery
 rules. Preserve window identity checks and require selection after source exit.
 
-Initial adaptation is downward only during a session: if send/decode queue age
-exceeds 33 ms for three consecutive one-second summaries, or overload causes
-recovery, reduce bitrate by 25% to a 6 Mbps floor; then reduce the output envelope
-one step (1920 -> 1280 -> 960 long edge; square 1080 -> 960 -> 720), maintaining
-60 fps and aspect ratio. Apply changes through a new generation, no more often
-than every five seconds. If the minimum configuration still fails, disable
-video. An optional manually selected 30 fps mode must be labeled degraded and
-does not pass this milestone. No automatic upward oscillation in the first build.
+Build 13 adapts only for connection congestion (100 ms socket-write deadline or
+encoded send backlog age/size violation), when the app's automatic reduction is
+enabled. Reduce bitrate by 25% to a 6 Mbps floor, then limit the long edge to 960
+pixels, maintaining 60 fps and aspect ratio. Decoder resets, presentation stalls
+and generic failures do not reduce bitrate. Thermal cooldown always applies its
+own protection envelope. Each recovery uses a fresh generation; the bounded
+retry policy above still applies. No automatic upward oscillation occurs.
+
+SETTINGS = 12 is iOS -> Windows, with exactly `bitrateBps` (0 or
+6000000..20000000) and Boolean `autoReduce`. It requires settings negotiation,
+the current nonzero generation, and zero flags/frame ID/capture timestamp.
+Changed preferences restart video immediately without consuming a failure retry;
+input stays connected. Identical preferences in SETTINGS or reconnect HELLO_ACK
+preserve the current adapted bitrate. Explicit changes select the preferred
+bitrate (or original host CLI bitrate), retaining any thermal resolution limit.
 
 Input has priority: suspend video immediately on an input FIFO overflow or input
 queue age over 20 ms, and disable it if rolling input p95 exceeds its approved
@@ -410,8 +418,8 @@ presentation counts; changing pool size alone does not establish lower glass
 latency or sustained 60 fps.
 
 `--video-diagnostics` adds optional Boolean `frameTiming` to HELLO and enables
-generation/frame-correlated host and iOS timestamp logs. The default HELLO stays
-unchanged; detailed tracing requires a matching build-7+ IPA. All iOS timestamps
+generation/frame-correlated host and iOS timestamp logs. Build 13 also advertises
+`settingsVersion: 1` on every HELLO and requires the matching IPA. All iOS timestamps
 and clock replies use Core Animation's host clock, matching Metal GPU/presentation
 timestamps. `Brokencca.VideoTiming` joins the logs and reports stage durations
 and capture-to-presentation estimates with clock uncertainty. It handles missing
@@ -425,7 +433,11 @@ The steps below describe the selectable **Full image** mode. As of IPA build 5,
 the default **Full-size ring** mode scales and centers the image so the calibrated
 circle radius equals the original controller radius on the device. This crops
 surrounding UI while keeping image aspect ratio and video/touch/LED alignment.
-Both modes use the same immutable geometry; zoom affects the coded-image display
+Build 13 adds **Arcade alignment**, scaling the game circle to the sensor overlay's
+visible inner edge (0.6 of the full controller radius). Its controller circle
+and inverse touch transform remain full size, independently of the smaller image;
+sensor positions outside image content remain active. All modes use the same
+immutable geometry snapshot; layout affects the coded-image display
 rectangle and its inverse touch transform. A full-device Metal viewport samples
 the visible image via a UV region and draws black outside the coded image, avoiding
 oversized negative viewports. Held contacts are released on mode switches.

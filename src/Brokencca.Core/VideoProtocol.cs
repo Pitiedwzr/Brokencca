@@ -6,7 +6,7 @@ namespace Brokencca.Core;
 public enum VideoMessageType : byte
 {
     Hello = 1, HelloAck = 2, Config = 3, Ready = 4, AccessUnit = 5,
-    Feedback = 6, RequestIdr = 7, ClockPing = 8, ClockPong = 9, Status = 10, Error = 11
+    Feedback = 6, RequestIdr = 7, ClockPing = 8, ClockPong = 9, Status = 10, Error = 11, Settings = 12
 }
 
 public sealed record VideoMessage(VideoMessageType Type, uint Sequence, ulong Generation,
@@ -44,7 +44,7 @@ public static class VideoProtocol
             throw new InvalidDataException("Invalid video header or version.");
         var type = (VideoMessageType)header[5];
         ushort flags = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(6));
-        if ((byte)type is < 1 or > 11 || flags > (type == VideoMessageType.AccessUnit ? 1 : 0))
+        if ((byte)type is < 1 or > 12 || flags > (type == VideoMessageType.AccessUnit ? 1 : 0))
             throw new InvalidDataException("Invalid video type or flags.");
         uint length = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(8));
         if (length > (type == VideoMessageType.AccessUnit ? MaxAccessUnit : MaxJsonPayload))
@@ -64,7 +64,7 @@ public static class VideoProtocol
 
     public static void Validate(VideoMessage message)
     {
-        if ((byte)message.Type is < 1 or > 11) throw new InvalidDataException("Unknown video message type.");
+        if ((byte)message.Type is < 1 or > 12) throw new InvalidDataException("Unknown video message type.");
         if (message.Payload is null) throw new InvalidDataException("Video payload is null.");
         if (message.Type == VideoMessageType.AccessUnit)
         {

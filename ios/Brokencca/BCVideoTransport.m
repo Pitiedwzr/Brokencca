@@ -64,6 +64,8 @@ static BOOL BCConfig(NSDictionary *c) {
 @property(nonatomic) BOOL frameTiming;
 @property(nonatomic) BOOL receiving;
 @property(nonatomic) uint64_t blockedAUReceivedUs;
+@property(nonatomic) NSInteger preferredBitrate;
+@property(nonatomic) BOOL automaticReduction, settingsEnabled, settingsDirty;
 @property(nonatomic) uint64_t generation, lastGeneration, lastReceived, lastDecoded, lastPresented, presentedAt;
 @property(nonatomic) NSTimeInterval lastMessage, partialSince, phaseSince, lastReport;
 @property(nonatomic) NSUInteger pendingWrites, decodedCount, receivedCount, presentedCount;
@@ -71,6 +73,7 @@ static BOOL BCConfig(NSDictionary *c) {
 - (void)receive:(nw_connection_t)connection;
 - (void)requestRecovery:(NSString *)reason;
 - (void)fail:(NSString *)reason code:(NSString *)code;
+- (void)sendSettingsIfNeeded;
 @end
 
 @implementation BCVideoTransport
@@ -79,6 +82,10 @@ static BOOL BCConfig(NSDictionary *c) {
     if ((self=[super init])) {
         _queue=dispatch_queue_create("org.brokencca.video.transport",DISPATCH_QUEUE_SERIAL); _decoder=[BCVideoDecoder new];
         _pending=[NSMutableDictionary dictionary];
+        NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+        NSInteger preferred=[defaults integerForKey:@"videoPreferredBitrate"];
+        _preferredBitrate=(preferred==0 || (preferred>=6000000 && preferred<=20000000)) ? preferred : 0;
+        _automaticReduction=[defaults objectForKey:@"videoAutomaticReduction"] ? [defaults boolForKey:@"videoAutomaticReduction"] : YES;
         __weak BCVideoTransport *weakSelf=self;
         _decoder.decoded=^(CVPixelBufferRef buffer,uint64_t frame,uint64_t generation,BCVideoGeometry *geometry,BCVideoTiming *timing) {
             CVPixelBufferRetain(buffer);
@@ -111,6 +118,20 @@ static BOOL BCConfig(NSDictionary *c) {
 }
 - (void)notify:(NSString *)status {
     dispatch_async(dispatch_get_main_queue(), ^{ if (self.statusChanged) self.statusChanged(status); });
+}
+- (void)setPreferredBitrate:(NSInteger)bitrate automaticReduction:(BOOL)automatic {
+    if (bitrate!=0 && (bitrate<6000000 || bitrate>20000000)) return;
+    dispatch_async(self.queue, ^{
+        if (self.preferredBitrate==bitrate && self.automaticReduction==automatic) return;
+        self.preferredBitrate=bitrate; self.automaticReduction=automatic; self.settingsDirty=YES;
+        [self sendSettingsIfNeeded];
+    });
+}
+- (void)sendSettingsIfNeeded {
+    if (!self.connection || self.failing || !self.settingsEnabled || !self.settingsDirty || self.phase!=BCVideoStreaming) return;
+    self.settingsDirty=NO;
+    [self notify:@"Applying video settings…"];
+    [self send:BCVideoSettings json:@{@"bitrateBps":@(self.preferredBitrate),@"autoReduce":@(self.automaticReduction)}];
 }
 - (void)setControlToken:(NSData *)token {
     NSData *copy=[token copy];
@@ -155,6 +176,7 @@ static BOOL BCConfig(NSDictionary *c) {
     self.lastReceived=self.lastDecoded=self.lastPresented=self.presentedAt=0; self.pendingWrites=0;
     self.lastMessage=self.phaseSince=NSProcessInfo.processInfo.systemUptime; self.partialSince=0;
     self.blockedAUReceivedUs=0;
+    self.settingsEnabled=NO;
     [self.pending removeAllObjects];
     nw_connection_set_queue(connection,self.queue); __weak BCVideoTransport *weakSelf=self;
     nw_connection_set_state_changed_handler(connection, ^(nw_connection_state_t state,nw_error_t error) {
@@ -219,11 +241,19 @@ static BOOL BCConfig(NSDictionary *c) {
             id timing=json[@"frameTiming"];
             if (timing && (![timing isKindOfClass:NSNumber.class] || CFGetTypeID((__bridge CFTypeRef)timing)!=CFBooleanGetTypeID())) { [self fail:@"Invalid frame timing option"]; return; }
             self.frameTiming=[timing boolValue];
+            id settings=json[@"settingsVersion"];
+            if (settings && !BCNumber(settings,1,1,YES)) { [self fail:@"Unsupported video settings version"]; return; }
+            self.settingsEnabled=settings!=nil;
             NSString *thermal=BCThermalState();
             if ([thermal isEqual:@"serious"] || [thermal isEqual:@"critical"]) {
                 [self fail:thermal code:@"thermal-limit"]; return;
             }
-            [self send:BCVideoHelloAck json:@{@"maxWidth":@1920,@"maxHeight":@1920,@"maxPixels":@2073600,@"maxFps":@60,@"maxAuBytes":@(BCVideoMaxAU),@"profiles":@[@"main",@"baseline"],@"maxLevel":@42}];
+            NSMutableDictionary *capabilities=[@{@"maxWidth":@1920,@"maxHeight":@1920,@"maxPixels":@2073600,@"maxFps":@60,@"maxAuBytes":@(BCVideoMaxAU),@"profiles":@[@"main",@"baseline"],@"maxLevel":@42} mutableCopy];
+            if (self.settingsEnabled) {
+                capabilities[@"settingsVersion"]=@1; capabilities[@"bitrateBps"]=@(self.preferredBitrate);
+                capabilities[@"autoReduce"]=@(self.automaticReduction); self.settingsDirty=NO;
+            }
+            [self send:BCVideoHelloAck json:capabilities];
             self.phase=BCVideoWaitingConfig; self.phaseSince=self.lastMessage; continue;
         }
         if (self.phase==BCVideoWaitingConfig) {
@@ -237,8 +267,11 @@ static BOOL BCConfig(NSDictionary *c) {
                     if (s.connection!=connection || s.generation!=generation) return;
                     if (!success) { [s fail:reason]; return; }
                     s.phase=BCVideoStreaming; s.phaseSince=NSProcessInfo.processInfo.systemUptime;
+                    NSInteger activeBitrate=[json[@"bitrateBps"] integerValue];
+                    dispatch_async(dispatch_get_main_queue(), ^{ if (s.activeBitrateChanged) s.activeBitrateChanged(activeBitrate); });
                     [s send:BCVideoReady json:@{@"hardwareVerified":@(verified)}];
                     [s notify:verified ? @"Video connected · hardware H.264" : @"Video connected · hardware verification unavailable on this iOS"];
+                    [s sendSettingsIfNeeded];
                 });
             }]; continue;
         }
@@ -355,6 +388,7 @@ static BOOL BCConfig(NSDictionary *c) {
 - (void)disconnect {
     nw_connection_t connection=self.connection; self.connection=nil; self.generation=0; self.received=nil;
     self.receiving=NO; self.blockedAUReceivedUs=0;
+    dispatch_async(dispatch_get_main_queue(), ^{ if (self.activeBitrateChanged) self.activeBitrateChanged(0); });
     [self.pending removeAllObjects]; [self.videoView clear]; [self.decoder stop];
     if (connection) { nw_connection_set_state_changed_handler(connection,NULL); nw_connection_cancel(connection); }
 }

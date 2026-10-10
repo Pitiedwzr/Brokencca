@@ -24,22 +24,27 @@ static void test_video_layout(void) {
     for (size_t i=0;i<sizeof(layouts)/sizeof(layouts[0]);i++) {
         for (int orientation=0;orientation<2;orientation++) {
             double w=orientation ? 768 : 1024,h=orientation ? 1024 : 768;
-            BCVideoCircleInView(layouts[i],w,h,true,&cx,&cy,&r);
+            for (BCVideoLayoutMode mode=BCVideoFullSizeRing;mode<=BCVideoArcade;mode++) {
+            BCVideoCircleInView(layouts[i],w,h,mode,&cx,&cy,&r);
+            double gameScale=mode==BCVideoArcade ? BCSensorVisibleInnerRadiusRatio : 1;
+            assert(fabs(r-gameScale*fmin(w,h)/2)<1e-8);
+            BCVideoControllerCircleInView(layouts[i],w,h,mode,&cx,&cy,&r);
             assert(fabs(cx-w/2)<1e-8 && fabs(cy-h/2)<1e-8 && fabs(r-fmin(w,h)/2)<1e-8);
-            BCVideoRect coded=BCVideoCodedRect(layouts[i],w,h,true);
+            BCVideoRect coded=BCVideoCodedRect(layouts[i],w,h,mode);
             assert(fabs(coded.width/coded.height-layouts[i].codedWidth/layouts[i].codedHeight)<1e-8);
-            assert(BCVideoMapPoint(layouts[i],w,h,true,cx,cy,&vx,&vy));
+            assert(BCVideoMapPoint(layouts[i],w,h,mode,cx,cy,&vx,&vy));
             assert(fabs(vx-1)<1e-8 && fabs(vy-1)<1e-8);
             for (int side=0;side<2;side++) for (int ring=0;ring<4;ring++) for (int sector=0;sector<30;sector++) {
                 double angle=-pi/2+(sector+.5)*pi/30,distance=r*(.65+ring*.1);
                 double x=cx+cos(angle)*distance*(side ? -1 : 1),y=cy+sin(angle)*distance;
-                assert(BCVideoMapPoint(layouts[i],w,h,true,x,y,&vx,&vy));
+                assert(BCVideoMapPoint(layouts[i],w,h,mode,x,y,&vx,&vy));
                 uint8_t bitmap[30]={0}; BCApplyTouch(vx,vy,2,2,bitmap);
                 int expected=side*120+ring*30+sector;
                 for (int zone=0;zone<240;zone++) assert(((bitmap[zone/8]>>(zone%8))&1)==(zone==expected));
             }
-            assert(!BCVideoMapPoint(layouts[i],w,h,true,-1,cy,&vx,&vy));
-            assert(!BCVideoMapPoint(layouts[i],w,h,true,cx,h,&vx,&vy));
+            assert(!BCVideoMapPoint(layouts[i],w,h,mode,-1,cy,&vx,&vy));
+            assert(!BCVideoMapPoint(layouts[i],w,h,mode,cx,h,&vx,&vy));
+            }
         }
     }
 }
@@ -112,6 +117,22 @@ static void test_video_schedule(void) {
 }
 
 int main(void) {
+    const char *settings="{\"bitrateBps\":15000000,\"autoReduce\":true}";
+    const char *settingsHello="{\"sessionToken\":\"00000000000000000000000000000000\",\"videoVersion\":1,\"settingsVersion\":1}";
+    assert(BCVideoJSONFields((const uint8_t *)settings,strlen(settings),BCVideoSettings));
+    assert(BCVideoJSONFields((const uint8_t *)settingsHello,strlen(settingsHello),BCVideoHello));
+    const char *settingsAck="{\"maxWidth\":1920,\"maxHeight\":1920,\"maxPixels\":2073600,\"maxFps\":60,\"maxAuBytes\":2097152,\"profiles\":[\"main\"],\"maxLevel\":42,\"settingsVersion\":1,\"bitrateBps\":0,\"autoReduce\":true}";
+    const char *legacyAck="{\"maxWidth\":1920,\"maxHeight\":1920,\"maxPixels\":2073600,\"maxFps\":60,\"maxAuBytes\":2097152,\"profiles\":[\"main\"],\"maxLevel\":42}";
+    const char *partialAck="{\"maxWidth\":1920,\"maxHeight\":1920,\"maxPixels\":2073600,\"maxFps\":60,\"maxAuBytes\":2097152,\"profiles\":[\"main\"],\"maxLevel\":42,\"settingsVersion\":1}";
+    assert(BCVideoJSONFields((const uint8_t *)settingsAck,strlen(settingsAck),BCVideoHelloAck));
+    assert(BCVideoJSONFields((const uint8_t *)legacyAck,strlen(legacyAck),BCVideoHelloAck));
+    assert(!BCVideoJSONFields((const uint8_t *)partialAck,strlen(partialAck),BCVideoHelloAck));
+    const char *partialSettings="{\"bitrateBps\":15000000}";
+    assert(!BCVideoJSONFields((const uint8_t *)partialSettings,strlen(partialSettings),BCVideoSettings));
+    uint8_t settingsHeader[BCVideoHeaderSize];
+    BCVideoHeader(settingsHeader,BCVideoSettings,false,(uint32_t)strlen(settings),1,2,0,0);
+    assert(BCValidVideoHeader(settingsHeader));
+    BCPut64(settingsHeader+16,0); assert(!BCValidVideoHeader(settingsHeader));
     // The ASAP trace includes a 105 ms decode spike. It must not tear down the
     // stream at 50 ms, but late output must not replay and sustained stalls recover.
     assert(!BCVideoDecodeStalled(1000000,1105000));

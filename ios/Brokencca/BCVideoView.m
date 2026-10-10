@@ -38,7 +38,7 @@
 @end
 
 @implementation BCVideoView
-@synthesize zoomToPlayfield = _zoomToPlayfield;
+@synthesize layoutMode = _layoutMode;
 + (Class)layerClass { return CAMetalLayer.class; }
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
@@ -124,13 +124,14 @@
     [self.guard lock]; _schedule.paused=paused; [self.guard unlock];
     [self.renderLoop setPaused:paused]; [self requestRender];
 }
-- (BOOL)zoomToPlayfield { [self.guard lock]; BOOL zoom=_zoomToPlayfield; [self.guard unlock]; return zoom; }
-- (void)setZoomToPlayfield:(BOOL)zoom {
+- (BCVideoLayoutMode)layoutMode { [self.guard lock]; BCVideoLayoutMode mode=_layoutMode; [self.guard unlock]; return mode; }
+- (void)setLayoutMode:(BCVideoLayoutMode)mode {
+    if (mode<BCVideoFullImage || mode>BCVideoArcade) return;
     // Publish the new touch geometry only when the matching image is rendered.
     // If video is disconnected, keep the frozen image and its mapping aligned.
     [self.guard lock];
-    if (_zoomToPlayfield == zoom) { [self.guard unlock]; return; }
-    _zoomToPlayfield = zoom; _layoutRevision++;
+    if (_layoutMode == mode) { [self.guard unlock]; return; }
+    _layoutMode = mode; _layoutRevision++;
     if (!_latest && _displayedBuffer && _latestGeneration == _generation && _generation) {
         _latest = CVPixelBufferRetain(_displayedBuffer);
         self.latestTiming=[self.displayedTiming renderCopy];
@@ -172,7 +173,7 @@
     CFTimeInterval renderStarted = CACurrentMediaTime();
     [self.guard lock];
     CGRect bounds=_renderBounds;
-    BOOL zoom=_zoomToPlayfield;
+    BCVideoLayoutMode mode=_layoutMode;
     uint64_t layoutRevision=_layoutRevision;
     BOOL drawableBounds=self.available && bounds.size.width>0 && bounds.size.height>0;
     if (!BCVideoBeginRender(&_schedule,drawableBounds && _latest && _generation)) { [self.guard unlock]; return; }
@@ -186,7 +187,7 @@
     timing.renderTrigger=refreshUs ? @"display-fallback" : @"pending-frame";
     timing.callbackUs=callbackUs; timing.renderOnMainThread=NSThread.isMainThread;
     [self.guard unlock];
-    geometry = [[BCVideoGeometry alloc] initWithConfiguration:geometry.configuration zoomToPlayfield:zoom];
+    geometry = [[BCVideoGeometry alloc] initWithConfiguration:geometry.configuration layoutMode:mode];
     // UIKit supplies an immutable bounds/scale/zoom snapshot and configures
     // drawableSize on main. The worker owns cache use and command submission.
     CVMetalTextureRef y = NULL, uv = NULL;
@@ -209,7 +210,7 @@
         [self.guard lock]; BCVideoGPUFinished(&_schedule,&ticket,true); [self.guard unlock]; return;
     }
     NSMutableDictionary *mapping = [[geometry.configuration dictionaryWithValuesForKeys:@[@"codedWidth",@"codedHeight",@"sourceWidth",@"sourceHeight",@"crop",@"contentRect",@"circle"]] mutableCopy];
-    mapping[@"zoomToPlayfield"] = @(zoom);
+    mapping[@"layoutMode"] = @(mode);
     mapping[@"layoutRevision"] = @(layoutRevision);
     // Control reconnects can reuse a generation number and identical calibration.
     // Republish geometry then, and reject presentation feedback from the old session.

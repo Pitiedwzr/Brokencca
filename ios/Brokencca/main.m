@@ -5,6 +5,7 @@
 #import "BCLed.h"
 #import "BCVideoTransport.h"
 #import "BCVideoView.h"
+#import "BCVideoSettingsViewController.h"
 
 @interface BCTouchView : UIView
 @property(nonatomic, strong) NSMutableSet<UITouch *> *activeTouches;
@@ -63,7 +64,7 @@
         int zone = side * 120 + ring * 30 + sector;
         double start = side == 0 ? -M_PI_2 + M_PI / 30 * sector : 3 * M_PI_2 - M_PI / 30 * sector;
         double end = start + (side == 0 ? 1 : -1) * M_PI / 30;
-        double inner = radius * (0.6 + ring * 0.1), outer = radius * (0.7 + ring * 0.1);
+        double inner = radius * (BCSensorVisibleInnerRadiusRatio + ring * 0.1), outer = radius * (0.7 + ring * 0.1);
         BOOL on = (bits[zone / 8] & (1 << (zone % 8))) != 0;
         int parts = leds ? 2 : 1;
         for (int half = 0; half < parts; half++) {
@@ -93,8 +94,11 @@
 @property(nonatomic, strong) BCVideoTransport *videoTransport;
 @property(nonatomic, strong) UILabel *status;
 @property(nonatomic, strong) UIButton *touchSizeButton;
+@property(nonatomic, strong) UIButton *settingsButton;
+@property(nonatomic) NSInteger activeBitrate;
 - (void)toggleTouchSize;
 - (void)updateTouchSizeButton;
+- (void)showVideoSettings;
 @end
 
 @implementation BCViewController
@@ -115,8 +119,10 @@
     self.ledTransport = [BCLEDTransport new];
     self.videoTransport = [BCVideoTransport new]; self.videoTransport.videoView = self.videoView;
     NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
-    [defaults registerDefaults:@{@"zoomVideoPlayfield":@YES}];
-    self.videoView.zoomToPlayfield = [defaults boolForKey:@"zoomVideoPlayfield"];
+    [defaults registerDefaults:@{@"zoomVideoPlayfield":@YES,@"videoPreferredBitrate":@0,@"videoAutomaticReduction":@YES}];
+    NSInteger mode=[defaults objectForKey:@"videoLayoutMode"] ? [defaults integerForKey:@"videoLayoutMode"] :
+        ([defaults boolForKey:@"zoomVideoPlayfield"] ? BCVideoFullSizeRing : BCVideoFullImage);
+    self.videoView.layoutMode=(mode>=BCVideoFullImage && mode<=BCVideoArcade) ? (BCVideoLayoutMode)mode : BCVideoFullSizeRing;
     self.status = [UILabel new];
     self.status.translatesAutoresizingMaskIntoConstraints = NO;
     self.status.textColor = UIColor.whiteColor;
@@ -127,7 +133,7 @@
     [self.view addSubview:self.status];
     [NSLayoutConstraint activateConstraints:@[
         [self.status.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [self.status.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
+        [self.status.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:52],
         [self.status.widthAnchor constraintLessThanOrEqualToAnchor:self.view.widthAnchor multiplier:0.95]
     ]];
     self.touchSizeButton = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -144,6 +150,18 @@
         [self.touchSizeButton.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-8]
     ]];
     [self updateTouchSizeButton];
+    self.settingsButton=[UIButton buttonWithType:UIButtonTypeSystem];
+    self.settingsButton.translatesAutoresizingMaskIntoConstraints=NO;
+    [self.settingsButton setTitle:@"Video settings" forState:UIControlStateNormal];
+    [self.settingsButton setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    self.settingsButton.backgroundColor=[UIColor colorWithWhite:0 alpha:.65];
+    self.settingsButton.layer.cornerRadius=8; self.settingsButton.contentEdgeInsets=UIEdgeInsetsMake(8,12,8,12);
+    [self.settingsButton addTarget:self action:@selector(showVideoSettings) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.settingsButton];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.settingsButton.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:8],
+        [self.settingsButton.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:8]
+    ]];
     __weak BCViewController *weakSelf = self;
     self.transport.videoSessionChanged = ^(NSData *token) {
         [weakSelf.videoTransport setControlToken:token];
@@ -160,6 +178,7 @@
         weakSelf.touchSizeButton.hidden = NO;
     };
     self.videoTransport.statusChanged = ^(NSString *status) { weakSelf.status.text = status; };
+    self.videoTransport.activeBitrateChanged = ^(NSInteger bitrate) { weakSelf.activeBitrate=bitrate; };
     self.ledTransport.frameChanged = ^(NSData *payload) {
         weakSelf.touchView.ledPayload = payload;
         [weakSelf.touchView setNeedsDisplay];
@@ -179,16 +198,38 @@
     [self resume];
 }
 - (void)updateTouchSizeButton {
-    [self.touchSizeButton setTitle:self.videoView.zoomToPlayfield ? @"Full-size ring" : @"Full image" forState:UIControlStateNormal];
+    NSArray *names=@[@"Full image",@"Full-size ring",@"Arcade alignment"];
+    [self.touchSizeButton setTitle:names[self.videoView.layoutMode] forState:UIControlStateNormal];
     self.touchSizeButton.accessibilityLabel = @"Video layout";
-    self.touchSizeButton.accessibilityValue = self.videoView.zoomToPlayfield ? @"Game ring fills the controller" : @"Entire game image";
-    self.touchSizeButton.accessibilityHint = @"Switches between the full-size game ring and the entire game image; touch stays aligned";
+    self.touchSizeButton.accessibilityValue = names[self.videoView.layoutMode];
+    self.touchSizeButton.accessibilityHint = @"Cycles full image, full-size ring and arcade alignment";
 }
 - (void)toggleTouchSize {
     [self.touchView clearTouches];
-    self.videoView.zoomToPlayfield = !self.videoView.zoomToPlayfield;
-    [NSUserDefaults.standardUserDefaults setBool:self.videoView.zoomToPlayfield forKey:@"zoomVideoPlayfield"];
+    self.videoView.layoutMode=(BCVideoLayoutMode)((self.videoView.layoutMode+1)%3);
+    [NSUserDefaults.standardUserDefaults setInteger:self.videoView.layoutMode forKey:@"videoLayoutMode"];
     [self updateTouchSizeButton]; [self.touchView setNeedsDisplay];
+}
+- (void)showVideoSettings {
+    [self.touchView clearTouches];
+    NSUserDefaults *defaults=NSUserDefaults.standardUserDefaults;
+    NSInteger bitrate=[defaults integerForKey:@"videoPreferredBitrate"];
+    if (bitrate!=0 && (bitrate<6000000 || bitrate>20000000)) bitrate=0;
+    BCVideoSettingsViewController *settings=[[BCVideoSettingsViewController alloc] initWithBitrate:bitrate
+        automatic:[defaults boolForKey:@"videoAutomaticReduction"] layout:self.videoView.layoutMode activeBitrate:self.activeBitrate];
+    __weak BCViewController *weakSelf=self;
+    settings.applied=^(NSInteger preferred,BOOL automatic,BCVideoLayoutMode mode) {
+        BCViewController *s=weakSelf; if (!s) return;
+        [s.touchView clearTouches]; s.videoView.layoutMode=mode;
+        [defaults setInteger:preferred forKey:@"videoPreferredBitrate"];
+        [defaults setBool:automatic forKey:@"videoAutomaticReduction"];
+        [defaults setInteger:mode forKey:@"videoLayoutMode"];
+        [s.videoTransport setPreferredBitrate:preferred automaticReduction:automatic];
+        [s updateTouchSizeButton]; [s.touchView setNeedsDisplay];
+    };
+    UINavigationController *navigation=[[UINavigationController alloc] initWithRootViewController:settings];
+    navigation.modalPresentationStyle=UIModalPresentationFormSheet;
+    [self presentViewController:navigation animated:YES completion:nil];
 }
 - (void)pause { [self.touchView clearTouches]; [self.transport stop]; [self.ledTransport stop]; [self.videoTransport stop]; [self.videoView setPaused:YES]; UIApplication.sharedApplication.idleTimerDisabled = NO; }
 - (void)resume { UIApplication.sharedApplication.idleTimerDisabled = YES; [self.videoTransport start]; [self.transport start]; [self.ledTransport start]; [self.videoView setPaused:NO]; }

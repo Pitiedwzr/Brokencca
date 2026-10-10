@@ -8,7 +8,7 @@
 enum { BCVideoHeaderSize = 40, BCVideoMaxJson = 16384, BCVideoMaxAU = 2097152 };
 enum { BCVideoHello = 1, BCVideoHelloAck = 2, BCVideoConfig = 3, BCVideoReady = 4,
        BCVideoAU = 5, BCVideoFeedback = 6, BCVideoRequestIDR = 7, BCVideoClockPing = 8,
-       BCVideoClockPong = 9, BCVideoStatus = 10, BCVideoError = 11 };
+       BCVideoClockPong = 9, BCVideoStatus = 10, BCVideoError = 11, BCVideoSettings = 12 };
 
 static inline uint64_t BCGet64(const uint8_t *p) {
     return (uint64_t)BCGet32(p) | ((uint64_t)BCGet32(p + 4) << 32);
@@ -25,7 +25,7 @@ static inline void BCVideoHeader(uint8_t *p, uint8_t type, bool idr, uint32_t le
     BCPut64(p + 16, generation); BCPut64(p + 24, frame); BCPut64(p + 32, capturedUs);
 }
 static inline bool BCValidVideoHeader(const uint8_t *p) {
-    if (memcmp(p, "BCVD", 4) || p[4] != 1 || p[5] < 1 || p[5] > 11 || p[7] ||
+    if (memcmp(p, "BCVD", 4) || p[4] != 1 || p[5] < 1 || p[5] > 12 || p[7] ||
         (p[5] == BCVideoAU ? p[6] > 1 : p[6] != 0)) return false;
     uint32_t length = BCGet32(p + 8);
     if (length == 0 || length > (p[5] == BCVideoAU ? BCVideoMaxAU : BCVideoMaxJson)) return false;

@@ -9,20 +9,22 @@
 // Only the protocol's flat objects and arrays are allowed; value semantics are checked separately.
 static inline bool BCJSONSpace(uint8_t c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
 static inline bool BCVideoJSONFields(const uint8_t *data, size_t length, uint8_t type) {
-    const char *hello[] = {"sessionToken","videoVersion","frameTiming"};
-    const char *ack[] = {"maxWidth","maxHeight","maxPixels","maxFps","maxAuBytes","profiles","maxLevel"};
+    const char *hello[] = {"sessionToken","videoVersion","frameTiming","settingsVersion"};
+    const char *ack[] = {"maxWidth","maxHeight","maxPixels","maxFps","maxAuBytes","profiles","maxLevel","settingsVersion","bitrateBps","autoReduce"};
     const char *config[] = {"codec","profile","level","codedWidth","codedHeight","fpsNum","fpsDen","bitrateBps","nalLengthBytes","color","rotation","sourceWidth","sourceHeight","crop","contentRect","circle","sps","pps"};
     const char *ready[] = {"hardwareVerified"};
     const char *feedback[] = {"receivedId","decodedId","presentedId","presentedAtUs","pendingDecode","replacedDecoded","thermal","displayMilliHz"};
     const char *request[] = {"reason"}; const char *ping[] = {"t1Us"}; const char *pong[] = {"t1Us","t2Us","t3Us"};
     const char *status[] = {"state","reason"}; const char *error[] = {"code","detail"};
+    const char *settings[] = {"bitrateBps","autoReduce"};
     const char **fields = NULL; size_t count = 0;
     switch (type) {
-        case BCVideoHello: fields=hello; count=3; break; case BCVideoHelloAck: fields=ack; count=7; break;
+        case BCVideoHello: fields=hello; count=4; break; case BCVideoHelloAck: fields=ack; count=10; break;
         case BCVideoConfig: fields=config; count=18; break; case BCVideoReady: fields=ready; count=1; break;
         case BCVideoFeedback: fields=feedback; count=8; break; case BCVideoRequestIDR: fields=request; count=1; break;
         case BCVideoClockPing: fields=ping; count=1; break; case BCVideoClockPong: fields=pong; count=3; break;
         case BCVideoStatus: fields=status; count=2; break; case BCVideoError: fields=error; count=2; break;
+        case BCVideoSettings: fields=settings; count=2; break;
         default: return false;
     }
     if (!length || length > BCVideoMaxJson) return false;
@@ -58,5 +60,6 @@ static inline bool BCVideoJSONFields(const uint8_t *data, size_t length, uint8_t
     }
     while (p<length && BCJSONSpace(data[p])) p++;
     uint32_t required=type==BCVideoHello ? 3u : ((1u<<count)-1);
+    if (type==BCVideoHelloAck && !(seen & (7u<<7))) required=127u;
     return p==length && (seen & required)==required;
 }

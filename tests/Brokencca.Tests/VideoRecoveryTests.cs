@@ -24,9 +24,30 @@ internal static class VideoRecoveryTests
         Check(reduced.RetryDelayMs(VideoRecoveryReason.Failure,1)==250);
         Check(reduced.Bitrate==4_000_000 && reduced.LongEdge==720); // never raise a user's lower load setting
         var faults = new VideoRecoveryPolicy(10_000_000,1280);
-        Check(faults.RetryDelayMs(VideoRecoveryReason.Failure,1)==250 && faults.Bitrate==7_500_000);
-        Check(faults.RetryDelayMs(VideoRecoveryReason.Failure,1)==500 && faults.LongEdge==960);
-        Check(faults.RetryDelayMs(VideoRecoveryReason.Failure,1) is null);
+        Check(faults.RetryDelayMs(VideoRecoveryReason.Congestion,1)==250 && faults.Bitrate==7_500_000);
+        Check(faults.RetryDelayMs(VideoRecoveryReason.Congestion,1)==500 && faults.LongEdge==960);
+        Check(faults.RetryDelayMs(VideoRecoveryReason.Congestion,1) is null);
+    }
+
+    public static void Preferences()
+    {
+        var policy=new VideoRecoveryPolicy(12_000_000,1280);
+        Check(!policy.ApplyPreferences(new())); // host CLI remains authoritative by default
+        Check(policy.Bitrate==12_000_000);
+        Check(policy.ApplyPreferences(new(20_000_000,true)) && policy.Bitrate==20_000_000);
+        Check(policy.RetryDelayMs(VideoRecoveryReason.Congestion,1)==250 && policy.Bitrate==15_000_000);
+        Check(!policy.ApplyPreferences(new(20_000_000,true)) && policy.Bitrate==15_000_000); // reconnect cannot undo adaptation
+        Check(policy.ApplyPreferences(new(8_000_000,false)) && policy.Bitrate==8_000_000 && policy.Failures==0);
+        Check(policy.RetryDelayMs(VideoRecoveryReason.Congestion,1)==250 && policy.Bitrate==8_000_000);
+        Check(policy.RetryDelayMs(VideoRecoveryReason.Thermal,1)==5000 && policy.Bitrate==6_000_000 && policy.LongEdge==960);
+        Check(!policy.ApplyPreferences(new(8_000_000,false)) && policy.Bitrate==6_000_000); // thermal limits survive retries
+        Check(policy.ApplyPreferences(new()) && policy.Bitrate==12_000_000); // explicit return to host preference
+        Check(policy.RetryDelayMs(VideoRecoveryReason.Failure,1)==250 && policy.Bitrate==12_000_000); // presentation fault is not congestion
+        foreach (int invalid in new[] {-1,1,5_999_999,20_000_001}) {
+            try { new VideoPreferences(invalid).Validate(); }
+            catch (ArgumentException) { continue; }
+            throw new Exception("Invalid preference accepted");
+        }
     }
 
     public static async Task ThermalHandshake()

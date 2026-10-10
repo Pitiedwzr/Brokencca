@@ -70,7 +70,7 @@ iproxy -l 24864:24864 24865:24865
 Add `24866:24866` for optional LEDs. Video binds to the active control token;
 input heartbeats and processing continue independently. Negotiation, encoder,
 network or presentation failure closes only video and retries with a fresh
-CONFIG/IDR at reduced settings, up to three consecutive failures. Decoder recovery
+CONFIG/IDR, up to three consecutive failures. Decoder recovery
 requests retain the current quality and share that failure budget, which resets
 after 30 seconds of streaming. Input queue age over 20 ms or depth at least 48
 stops video for the current control session. Restart the host after video disables
@@ -94,6 +94,28 @@ restarting video or progressively lowering quality. Retest gameplay, freezes,
 thermal cooldown/resume and wire reconnects with `--video-diagnostics`; these
 protection budgets still require device validation.
 
+## App video settings (build 13)
+
+Install the host and IPA from the same build. The host now negotiates a video
+settings extension; an older IPA may reject it. Older hosts can still stream to
+the new IPA, but cannot apply its bitrate preferences.
+
+Open **Video settings** on the iPad. **Use host setting** is the default and keeps
+the existing 10 Mbps default or your `--video-bitrate` value. Explicit presets
+are 6, 8, 10, 15 and 20 Mbps and override the host setting. The panel shows the
+active stream bitrate, which may be lower than the preference after adaptation.
+**Apply** saves changes on the iPad; **Cancel** leaves settings unchanged. Bitrate
+changes briefly restart video with fresh configuration/IDR while input stays active.
+Settings can also be saved before connecting.
+
+**Automatic bitrate reduction** defaults on. Socket write timeouts or encoded
+send backlog can reduce bitrate by 25%, down to 6 Mbps, and then limit the long
+edge to 960 pixels. Decoder resets, presentation stalls and unrelated failures
+retain quality. Turning reduction off retains the requested quality during
+congestion recovery; thermal protection always remains enabled. Reconnecting
+with unchanged preferences preserves the adapted bitrate. There is no automatic
+upward oscillation or frame-rate reduction: the target remains 60 fps.
+
 ## Touch area during video
 
 IPA build 5 adds a button in the top-right corner. **Full-size ring** is the
@@ -103,8 +125,14 @@ local highlights, LEDs and video use the same transform. The image keeps its
 aspect ratio; surrounding game UI can be cropped. The calibrated playfield
 circle stays visible, and areas outside actual video content do not produce input.
 
-Tap the button for **Full image** to show the complete aspect-fit video with a
-smaller, still aligned touch ring. Switching releases current contacts before
+Build 13 adds **Arcade alignment**: the calibrated game's outer ring matches the
+sensor overlay's visible inner edge, at 60% of the full controller radius. The
+sensor touch zones, highlights and LEDs keep their original full size, including
+areas outside the smaller video image. This intentionally separates the game
+ring from the sensor ring to match the arcade arrangement.
+
+Use Video settings or cycle the top-right layout button. **Full image** shows the
+complete aspect-fit video with a smaller, still aligned touch ring. Switching releases current contacts before
 changing the mapping; lift and retouch to continue. The choice is saved across
 app launches, and static images redraw when the mode changes. This is an iOS
 presentation choice; capture calibration and encoding settings do not change.
@@ -171,9 +199,9 @@ geometry is republished on a new renderer session even with identical calibratio
 For a detailed measurement, use the updated host **and build-7+ IPA**, adding
 `--video-diagnostics` to your existing command. Save its complete output and the
 iOS console output from the same host run. This flag adds optional `frameTiming`
-to video HELLO: normal streaming with no diagnostics retains the original HELLO,
-and older hosts work with the new IPA. An older IPA cannot accept diagnostic
-HELLO from the updated host. Detailed tracing is off without this flag, since
+to video HELLO. Build 13 also advertises `settingsVersion: 1`, even without
+diagnostics, so install the matching IPA and host. Older hosts work with the new
+IPA without the app bitrate controls. Detailed tracing is off without this flag, since
 logging each frame can affect the measurement and power consumption.
 
 The host emits `video_frame_host` records and clock-sync `video_clock` samples.

@@ -1,5 +1,33 @@
 # Implementation validation
 
+## App video preferences and Arcade alignment, build 13
+
+App settings now persist preferred bitrate (host default or 6–20 Mbps), automatic
+congestion reduction (on by default), and three layout modes. Explicit bitrate
+changes restart only video with a new generation; unchanged reconnect preferences
+retain adaptation. Decoder/presentation recovery retains quality, and thermal
+protection remains enabled with automatic reduction off.
+
+Arcade alignment places the calibrated game circle at the visible inner sensor
+edge (0.6 controller radius). Touch/LED geometry stays full size. Portable tests
+cover all 240 sensor zone centers in both ring modes, three calibrations and
+portrait/landscape bounds, including sensor positions outside the Arcade image.
+The C# regression suite passes 41/41, including settings framing/schema rejection,
+host defaults, explicit preferences, reconnect adaptation and thermal limits.
+The portable iOS C suite passes with warnings treated as errors.
+
+Xcode/IPA compilation remains for GitHub Actions. Device checks still required:
+Apply/Cancel, bitrate changes during playback and while disconnected, saved
+preferences across app restart, automatic reduction on/off, and all three layouts
+through rotation, pause/resume and wire reconnect. Use matching build-13 host/IPA.
+
+The preceding build-12 gameplay run (`game_video_playing_ASAP_new.log` and
+`ios_game_video_playing_ASAP_new.log`) matched 40,070 frames. Steady acquisition
+to presentation measured median 36.091 ms and p95 45.935 ms. One presentation
+watchdog recovery occurred; the user reported no noticeable or stuck freezes
+and accepted recovery behavior. This supports the recovery change, not a new
+build-13 performance claim.
+
 ## Mercury window capture acceptance, 2026-10-02
 
 **Milestone 2 is complete and accepted on the user's tested game PC.** The user

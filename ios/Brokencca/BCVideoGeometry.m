@@ -8,12 +8,12 @@
 
 @implementation BCVideoGeometry
 - (instancetype)initWithConfiguration:(NSDictionary *)configuration {
-    return [self initWithConfiguration:configuration zoomToPlayfield:NO];
+    return [self initWithConfiguration:configuration layoutMode:BCVideoFullImage];
 }
-- (instancetype)initWithConfiguration:(NSDictionary *)configuration zoomToPlayfield:(BOOL)zoom {
+- (instancetype)initWithConfiguration:(NSDictionary *)configuration layoutMode:(BCVideoLayoutMode)mode {
     if ((self = [super init])) {
         _configuration = [configuration copy]; _codedSize = CGSizeMake([configuration[@"codedWidth"] doubleValue], [configuration[@"codedHeight"] doubleValue]);
-        _zoomToPlayfield = zoom;
+        _layoutMode = mode;
         _layout.codedWidth = _codedSize.width; _layout.codedHeight = _codedSize.height;
         _layout.sourceWidth = [configuration[@"sourceWidth"] doubleValue]; _layout.sourceHeight = [configuration[@"sourceHeight"] doubleValue];
         NSArray *crop=configuration[@"crop"],*content=configuration[@"contentRect"],*circle=configuration[@"circle"];
@@ -23,23 +23,23 @@
     return self;
 }
 - (CGRect)codedRectInBounds:(CGRect)bounds {
-    BCVideoRect r = BCVideoCodedRect(_layout,bounds.size.width,bounds.size.height,self.zoomToPlayfield);
+    BCVideoRect r = BCVideoCodedRect(_layout,bounds.size.width,bounds.size.height,self.layoutMode);
     return CGRectMake(bounds.origin.x+r.x,bounds.origin.y+r.y,r.width,r.height);
 }
 - (CGRect)contentRectInBounds:(CGRect)bounds {
-    BCVideoRect r=BCVideoContentRect(_layout,BCVideoCodedRect(_layout,bounds.size.width,bounds.size.height,self.zoomToPlayfield));
+    BCVideoRect r=BCVideoContentRect(_layout,BCVideoCodedRect(_layout,bounds.size.width,bounds.size.height,self.layoutMode));
     return CGRectMake(bounds.origin.x+r.x,bounds.origin.y+r.y,r.width,r.height);
 }
 - (BOOL)mapPoint:(CGPoint)p bounds:(CGRect)bounds toVirtual:(CGPoint *)result {
     double vx,vy;
-    if (!BCVideoMapPoint(_layout,bounds.size.width,bounds.size.height,self.zoomToPlayfield,
+    if (!BCVideoMapPoint(_layout,bounds.size.width,bounds.size.height,self.layoutMode,
         p.x-bounds.origin.x,p.y-bounds.origin.y,&vx,&vy)) return NO;
     *result = CGPointMake(vx,vy);
     return YES;
 }
 - (CGPoint)circleCenterInBounds:(CGRect)bounds radius:(CGFloat *)radius {
     double cx,cy,r;
-    BCVideoCircleInView(_layout,bounds.size.width,bounds.size.height,self.zoomToPlayfield,&cx,&cy,&r);
+    BCVideoControllerCircleInView(_layout,bounds.size.width,bounds.size.height,self.layoutMode,&cx,&cy,&r);
     *radius = r;
     return CGPointMake(bounds.origin.x+cx,bounds.origin.y+cy);
 }

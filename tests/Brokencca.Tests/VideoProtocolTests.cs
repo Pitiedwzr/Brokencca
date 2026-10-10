@@ -66,6 +66,8 @@ internal static class VideoProtocolTests
         var hello = new VideoMessage(VideoMessageType.Hello, 0, 0, 0, 0, json);
         string timingHello = Encoding.UTF8.GetString(json)[..^1] + ",\"frameTiming\":true}";
         VideoProtocol.Encode(hello with { Payload = Encoding.UTF8.GetBytes(timingHello) });
+        VideoProtocol.Encode(hello with { Payload = Encoding.UTF8.GetBytes(timingHello[..^1]+",\"settingsVersion\":1}") });
+        Reject(() => VideoProtocol.Encode(hello with { Payload = Encoding.UTF8.GetBytes(timingHello[..^1]+",\"settingsVersion\":2}") }));
         VideoProtocol.Encode(hello with { Payload = Encoding.UTF8.GetBytes(timingHello.Replace("true", "false")) });
         foreach (string badTiming in new[] { "1", "null", "\"true\"", "[]" })
             Reject(() => VideoProtocol.Encode(hello with { Payload = Encoding.UTF8.GetBytes(timingHello.Replace("true", badTiming)) }));
@@ -82,6 +84,17 @@ internal static class VideoProtocolTests
             """);
         var config = new VideoMessage(VideoMessageType.Config, 1, 1, 0, 0, validConfig);
         VideoProtocol.Encode(config);
+        var settings = new VideoMessage(VideoMessageType.Settings,3,1,0,0,Encoding.UTF8.GetBytes("{\"bitrateBps\":15000000,\"autoReduce\":true}"));
+        Assert((await VideoProtocol.ReadAsync(new OneByteStream(VideoProtocol.Encode(settings)),default)).Type==VideoMessageType.Settings);
+        Reject(() => VideoProtocol.Encode(settings with { Generation=0 }));
+        foreach (string bad in new[] { "{\"bitrateBps\":5999999,\"autoReduce\":true}","{\"bitrateBps\":20000001,\"autoReduce\":true}",
+            "{\"bitrateBps\":10000000,\"autoReduce\":1}","{\"bitrateBps\":10000000}","{\"bitrateBps\":0,\"autoReduce\":true,\"autoReduce\":false}" })
+            Reject(() => VideoProtocol.Encode(settings with { Payload=Encoding.UTF8.GetBytes(bad) }));
+        string ack="{\"maxWidth\":1920,\"maxHeight\":1920,\"maxPixels\":2073600,\"maxFps\":60,\"maxAuBytes\":2097152,\"profiles\":[\"main\"],\"maxLevel\":42}";
+        var caps=new VideoMessage(VideoMessageType.HelloAck,0,0,0,0,Encoding.UTF8.GetBytes(ack));
+        VideoProtocol.Encode(caps);
+        VideoProtocol.Encode(caps with { Payload=Encoding.UTF8.GetBytes(ack[..^1]+",\"settingsVersion\":1,\"bitrateBps\":0,\"autoReduce\":true}") });
+        Reject(() => VideoProtocol.Encode(caps with { Payload=Encoding.UTF8.GetBytes(ack[..^1]+",\"settingsVersion\":1}") }));
         var thermal = new VideoMessage(VideoMessageType.Error,0,0,0,0,
             Encoding.UTF8.GetBytes("{\"code\":\"thermal-limit\",\"detail\":\"serious\"}"));
         VideoProtocol.Encode(thermal);

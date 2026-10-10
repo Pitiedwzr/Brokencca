@@ -16,6 +16,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("per-frame timing correlation, clock uncertainty and missing/drop timestamps", () => Sync(VideoTimingTests.Pipeline)),
     ("presentation watchdog source idle/resume and genuine stalled frames", () => Sync(VideoPresentationTests.Watchdog)),
     ("thermal cooldown budgets and bounded decoder recovery", () => Sync(VideoRecoveryTests.Budgets)),
+    ("video preferences preserve adaptation, host defaults and thermal limits", () => Sync(VideoRecoveryTests.Preferences)),
     ("thermal HELLO probe avoids capture and cooldown cancels promptly", VideoRecoveryTests.ThermalHandshake),
     ("fragmented and concatenated frames", Fragments),
     ("reject malformed headers and payloads", InvalidFrames),

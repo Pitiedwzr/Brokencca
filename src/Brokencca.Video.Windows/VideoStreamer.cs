@@ -18,6 +18,9 @@ public static class VideoStreamer
     private sealed class InputOverloadException() : IOException("Video stopped because input queue age/depth exceeded its protection budget.");
     private sealed class ThermalCooldownException(string state) : IOException("iOS thermal limit: " + state);
     private sealed class DecoderRecoveryException(string reason) : IOException("iOS requested a fresh IDR generation: " + reason);
+    private sealed class CongestionException(string reason, Exception? inner = null) : IOException(reason, inner);
+    private sealed class SettingsChangedException(VideoPreferences preferences) : IOException("Video settings changed")
+    { public VideoPreferences Preferences { get; } = preferences; }
     private static long generations, frameIds;
     private sealed record Frame(ulong Id, ulong CaptureUs, byte[] Bytes, bool Idr, byte[] Config, long Enqueued,
         long AcquiredUs, long SubmittedUs, long EncodedUs);
@@ -29,12 +32,20 @@ public static class VideoStreamer
         {
             long started = Stopwatch.GetTimestamp();
             VideoRecoveryReason reason = VideoRecoveryReason.Failure;
-            try { await ConnectionAsync(options with { Bitrate = recovery.Bitrate, LongEdge = recovery.LongEdge }, sessionToken, token); }
+            try { await ConnectionAsync(options, recovery, sessionToken, token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+            catch (SettingsChangedException e)
+            {
+                recovery.ApplyPreferences(e.Preferences);
+                Console.WriteLine(JsonSerializer.Serialize(new { kind = "video_settings", preferred_bitrate = recovery.Preferences.BitrateBps,
+                    active_bitrate = recovery.Bitrate, auto_reduce = recovery.Preferences.AutomaticReduction, input_preserved = true }));
+                continue; // explicit Apply is not a failed connection or a quality downgrade
+            }
             catch (Exception e)
             {
                 reason = e is ThermalCooldownException ? VideoRecoveryReason.Thermal :
-                    e is DecoderRecoveryException ? VideoRecoveryReason.Decoder : VideoRecoveryReason.Failure;
+                    e is DecoderRecoveryException ? VideoRecoveryReason.Decoder :
+                    e is CongestionException ? VideoRecoveryReason.Congestion : VideoRecoveryReason.Failure;
                 Console.Error.WriteLine(JsonSerializer.Serialize(new { kind = reason == VideoRecoveryReason.Thermal ? "video_cooldown" : "video_failure",
                     attempt = recovery.Failures + 1, message = e.Message, retry_after_ms = reason == VideoRecoveryReason.Thermal ? 5000 : (int?)null, input_preserved = true }));
                 if (e is DllNotFoundException or EntryPointNotFoundException or PlatformNotSupportedException or ArgumentException or InputOverloadException) break;
@@ -47,7 +58,7 @@ public static class VideoStreamer
         if (!token.IsCancellationRequested) Console.Error.WriteLine("Video disabled after repeated failures. Input remains active; restart the host to retry video.");
     }
 
-    private static async Task ConnectionAsync(VideoOptions options, ReadOnlyMemory<byte> sessionToken, CancellationToken token)
+    private static async Task ConnectionAsync(VideoOptions options, VideoRecoveryPolicy recovery, ReadOnlyMemory<byte> sessionToken, CancellationToken token)
     {
         using var child = CancellationTokenSource.CreateLinkedTokenSource(token);
         using var client = new TcpClient { NoDelay = true, SendBufferSize = 64 * 1024, ReceiveBufferSize = 16 * 1024 };
@@ -62,7 +73,9 @@ public static class VideoStreamer
         {
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(child.Token);
             deadline.CancelAfter(100);
-            await VideoProtocol.WriteAsync(socket, new(type, outgoing++, generation, id, capture, payload, idr), deadline.Token);
+            try { await VideoProtocol.WriteAsync(socket, new(type, outgoing++, generation, id, capture, payload, idr), deadline.Token); }
+            catch (OperationCanceledException e) when (!child.IsCancellationRequested && deadline.IsCancellationRequested)
+            { throw new CongestionException("Video socket write exceeded 100 ms.",e); }
         }
         async Task SendFrame(Frame frame, bool bootstrap)
         {
@@ -95,12 +108,16 @@ public static class VideoStreamer
             }
             return message;
         }
-        var helloBody = new Dictionary<string, object> { ["sessionToken"] = Convert.ToHexString(sessionToken.Span), ["videoVersion"] = 1 };
+        var helloBody = new Dictionary<string, object> { ["sessionToken"] = Convert.ToHexString(sessionToken.Span), ["videoVersion"] = 1, ["settingsVersion"] = 1 };
         if (options.Diagnostics) helloBody["frameTiming"] = true;
         await Send(VideoMessageType.Hello, JsonSerializer.SerializeToUtf8Bytes(helloBody));
         VideoMessage hello = await Receive(3000);
         if (hello.Type != VideoMessageType.HelloAck || hello.Generation != 0) throw new InvalidDataException("Expected video HELLO_ACK.");
         using JsonDocument caps = JsonDocument.Parse(hello.Payload);
+        bool settingsSupported = caps.RootElement.TryGetProperty("settingsVersion", out _);
+        if (settingsSupported)
+            recovery.ApplyPreferences(new(caps.RootElement.GetProperty("bitrateBps").GetInt32(),caps.RootElement.GetProperty("autoReduce").GetBoolean()));
+        options = options with { Bitrate = recovery.Bitrate, LongEdge = recovery.LongEdge };
         var channel = Channel.CreateBounded<Frame>(new BoundedChannelOptions(1) { SingleReader = true, SingleWriter = true });
         using var ready = new ManualResetEventSlim(false);
         var state = new PipelineState();
@@ -146,6 +163,14 @@ public static class VideoStreamer
                     {
                         VideoMessage feedback = await Receive(1000);
                         if (feedback.Generation != generation) throw new InvalidDataException("Video feedback generation changed.");
+                        if (feedback.Type == VideoMessageType.Settings)
+                        {
+                            if (!settingsSupported) throw new InvalidDataException("Video settings were not negotiated.");
+                            using JsonDocument preferences = JsonDocument.Parse(feedback.Payload);
+                            var requested = new VideoPreferences(preferences.RootElement.GetProperty("bitrateBps").GetInt32(),preferences.RootElement.GetProperty("autoReduce").GetBoolean());
+                            if (requested != recovery.Preferences) throw new SettingsChangedException(requested);
+                            continue;
+                        }
                         if (feedback.Type == VideoMessageType.RequestIdr)
                         {
                             using JsonDocument request = JsonDocument.Parse(feedback.Payload);
@@ -210,7 +235,7 @@ public static class VideoStreamer
                 if (next is not null)
                 {
                     if (Stopwatch.GetElapsedTime(next.Enqueued).TotalMilliseconds > 50 || next.Bytes.Length > maxAu)
-                        throw new IOException("Encoded backlog exceeds age/size limit.");
+                        throw new CongestionException("Encoded backlog exceeds age/size limit.");
                     if (!initialIdr && !next.Idr) throw new InvalidDataException("First video frame is not IDR.");
                     initialIdr = true;
                     Interlocked.Exchange(ref sentId, (long)next.Id);
